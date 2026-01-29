@@ -1,0 +1,53 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Built binaries (project-specific)
+server
+probe
+loadtest
+tmp_server
+.!*!tmp_server
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Debug files
+debug
+*.log
+
+# Environment files
+.env
+.env.local
+*.local
+
+# Temporary files
+tmp/
+*.tmp
+
+# Build output
+bin/
+dist/
