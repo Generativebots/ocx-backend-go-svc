@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package governance.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "ocx/pb";
+
+// --- New: Plan Manifest (The Brain) ---
+message ExecutionPlan {
+  string plan_id = 1;
+  string agent_id = 2;
+  repeated string allowed_calls = 3; // e.g., ["sys_read", "socket_send"]
+  string expected_outcome_hash = 4;
+  bool manual_review_required = 5; // The Boolean Switch (Default: false)
+}
+
+service TrafficAssessor {
+  // Bi-directional stream: Probe sends Request, Jury sends Verdict
+  rpc InspectTraffic(stream AssessmentRequest) returns (stream AssessmentResponse);
+  
+  // New: Orchestrator pushes a plan to the Gateway
+  rpc SubmitPlan(ExecutionPlan) returns (Verdict);
+}
+
+// Metadata about the originating process and network context
+message TrafficMetadata {
+  uint32 pid = 1;                 // Process ID from eBPF
+  string comm = 2;                // Process name (e.g., "python3", "curl")
+  uint32 file_descriptor = 3;     // FD of the socket
+  string source_address = 4;      // Captured IP
+  uint32 source_port = 5;         // Captured Port
+  string destination_address = 6; 
+  uint32 destination_port = 7;
+  string binary_path = 8;         // Full path to the executable (Provenance)
+  string binary_sha256 = 9;       // SHA-256 of the executable (Identity)
+  string container_id = 10;       // Optional: For container context
+}
+
+message AssessmentRequest {
+  string request_id = 1;          // UUID for tracking through the pipeline
+  uint64 sequence_number = 2;     // For ordering (New High-Perf Requirement)
+  google.protobuf.Duration timeout = 3; // Max time Jury has to decide (New High-Perf Requirement)
+  google.protobuf.Timestamp captured_at = 4;
+  TrafficMetadata metadata = 5;
+  bytes raw_payload = 6;          // The intercepted buffer (max 1024 bytes)
+  ProtocolType protocol = 7;
+}
+
+message AssessmentResponse {
+  string request_id = 1;          // Must match the AssessmentRequest ID
+  Verdict verdict = 2;
+  float confidence_score = 3;     // 0.0 to 1.0
+  string reasoning = 4;           // Optional: Why the Jury made this choice
+  map<string, string> metadata = 5; // Extensible fields (e.g., "new_ttl": "60")
+}
+
+enum ProtocolType {
+  PROTOCOL_TYPE_UNSPECIFIED = 0;
+  PROTOCOL_TYPE_TCP = 1;
+  PROTOCOL_TYPE_HTTP = 2;
+  PROTOCOL_TYPE_TLS = 3;
+  PROTOCOL_TYPE_DNS = 4;
+}
+
+message Verdict {
+  enum Action {
+    ACTION_ALLOW = 0;
+    ACTION_BLOCK = 1;
+    ACTION_MITIGATE = 2;         // Modify payload before passing it on
+    ACTION_OBSERVE = 3;          // Allow but log more aggressively
+  }
+  Action action = 1;
+}

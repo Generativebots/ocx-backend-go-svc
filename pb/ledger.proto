@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package ocx.ledger.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service LedgerService {
+  // Records a completed or reverted transaction
+  rpc RecordEntry(LedgerEntry) returns (LedgerResponse);
+  
+  // Streams entries for the real-time Trust Dashboard
+  rpc StreamAuditLog(AuditFilter) returns (stream LedgerEntry);
+}
+
+message LedgerEntry {
+  string turn_id = 1;
+  string agent_id = 2;
+  string binary_hash = 3;       // SHA-256 of the process binary
+  string plan_id = 4;
+  
+  enum TurnStatus {
+    COMMITTED = 0;
+    COMPENSATED = 1;            // Reverted due to mismatch
+    ABORTED_BY_HUMAN = 2;
+    SECURITY_VIOLATION = 3;
+  }
+  TurnStatus status = 5;
+  
+  string intent_hash = 6;       // The hash predicted by the Brain
+  string actual_hash = 7;       // The hash produced by the Ghost-Run
+  
+  repeated string actions_taken = 8; // List of tools/syscalls invoked
+  google.protobuf.Timestamp timestamp = 9;
+}
+
+message AuditFilter {
+  string agent_id = 1;
+}
+
+message LedgerResponse {
+  bool acknowledged = 1;
+  string entry_id = 2;
+}

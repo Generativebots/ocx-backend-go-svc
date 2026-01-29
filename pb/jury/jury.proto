@@ -1,0 +1,35 @@
+// Protocol Buffer definition for Jury Auditor gRPC service
+
+syntax = "proto3";
+
+package ocx.jury;
+
+option go_package = "github.com/ocx/backend/pb/jury";
+
+// Jury Auditor Service - Real-Time Cognitive Audit
+service JuryAuditor {
+    // Single audit request
+    rpc AuditIntent(AuditRequest) returns (AuditResponse);
+    
+    // Streaming audit for batch processing
+    rpc StreamAudit(stream AuditRequest) returns (stream AuditResponse);
+}
+
+// Audit request from Go-Gateway
+message AuditRequest {
+    string transaction_id = 1;
+    string agent_id = 2;
+    string tool_name = 3;
+    map<string, string> parameters = 4;
+    map<string, string> context = 5;
+    bytes raw_payload = 6;  // Optional: raw socket payload for entropy analysis
+}
+
+// Audit response to Escrow Gate
+message AuditResponse {
+    string transaction_id = 1;
+    string verdict = 2;  // "PASS" or "FAIL"
+    double confidence = 3;  // 0.0 to 1.0
+    string reason = 4;
+    double audit_time = 5;  // Seconds
+}

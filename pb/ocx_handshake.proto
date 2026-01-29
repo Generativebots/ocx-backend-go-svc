@@ -1,0 +1,266 @@
+syntax = "proto3";
+
+package federation;
+
+option go_package = "github.com/ocx/backend/pb/federation";
+
+// ============================================================================
+// HANDSHAKE MESSAGES - Full 6-Step Inter-OCX Handshake Protocol
+// ============================================================================
+
+// Step 1: HELLO - Initial capability exchange
+message HandshakeHello {
+    // Unique identifier for the OCX instance
+    string instance_id = 1;
+    
+    // Organization name
+    string organization = 2;
+    
+    // Protocol version (e.g., "1.0")
+    string protocol_version = 3;
+    
+    // Supported capabilities
+    repeated string capabilities = 4;
+    
+    // SPIFFE ID for identity verification
+    string spiffe_id = 5;
+    
+    // Public key for signature verification (PEM format)
+    string public_key = 6;
+    
+    // Timestamp of hello message (Unix seconds)
+    int64 timestamp = 7;
+    
+    // Optional metadata
+    map<string, string> metadata = 8;
+}
+
+// Step 2: CHALLENGE - Cryptographic challenge with nonce
+message HandshakeChallenge {
+    // Random nonce for replay protection (32 bytes, hex-encoded)
+    string nonce = 1;
+    
+    // Cryptographic challenge (HMAC-SHA256 of nonce + instance_id)
+    bytes challenge = 2;
+    
+    // Challenge type (e.g., "HMAC-SHA256")
+    string challenge_type = 3;
+    
+    // Timestamp of challenge (Unix seconds)
+    int64 timestamp = 4;
+    
+    // Difficulty level (for future proof-of-work)
+    int32 difficulty = 5;
+    
+    // Expected capabilities from remote OCX
+    repeated string required_capabilities = 6;
+}
+
+// Step 3: PROOF - Zero-knowledge proof response
+message HandshakeProof {
+    // Signature of the challenge using private key
+    bytes proof = 1;
+    
+    // Hash of audit trail for zero-knowledge verification
+    bytes audit_hash = 2;
+    
+    // Digital signature of the proof
+    bytes signature = 3;
+    
+    // Certificate chain (PEM format)
+    repeated string certificate_chain = 4;
+    
+    // Timestamp of proof generation (Unix seconds)
+    int64 timestamp = 5;
+    
+    // Proof type (e.g., "ECDSA-SHA256")
+    string proof_type = 6;
+}
+
+// Step 4: VERIFY - Mutual verification result
+message HandshakeVerify {
+    // Whether the proof was successfully verified
+    bool verified = 1;
+    
+    // Trust level calculated from verification (0.0 - 1.0)
+    double trust_level = 2;
+    
+    // Timestamp of verification (Unix seconds)
+    int64 verified_at = 3;
+    
+    // Verification details
+    VerificationDetails details = 4;
+    
+    // Any verification errors or warnings
+    repeated string warnings = 5;
+}
+
+// Verification details sub-message
+message VerificationDetails {
+    // Whether audit hash matches
+    bool audit_hash_match = 1;
+    
+    // Whether signature is valid
+    bool signature_valid = 2;
+    
+    // Whether certificate chain is valid
+    bool certificate_valid = 3;
+    
+    // Whether nonce is fresh (not replayed)
+    bool nonce_fresh = 4;
+    
+    // Audit score (0.0 - 1.0)
+    double audit_score = 5;
+    
+    // Reputation score (0.0 - 1.0)
+    double reputation_score = 6;
+    
+    // Attestation score (0.0 - 1.0)
+    double attestation_score = 7;
+    
+    // History score (0.0 - 1.0)
+    double history_score = 8;
+}
+
+// Step 5: ATTESTATION - Trust attestation exchange
+message HandshakeAttestation {
+    // Final calculated trust level (0.0 - 1.0)
+    double trust_level = 1;
+    
+    // Trust tax to be applied (0.0 - 1.0)
+    double trust_tax = 2;
+    
+    // Expiration timestamp for this attestation (Unix seconds)
+    int64 expires_at = 3;
+    
+    // Unique attestation identifier
+    string attestation_id = 4;
+    
+    // Ledger transaction ID for attestation
+    string ledger_tx_id = 5;
+    
+    // Attestation signature
+    bytes attestation_signature = 6;
+    
+    // Additional attestation metadata
+    map<string, string> metadata = 7;
+}
+
+// Step 6: ACCEPT/REJECT - Final handshake decision
+message HandshakeResult {
+    // Verdict: "ACCEPTED" or "REJECTED"
+    string verdict = 1;
+    
+    // Human-readable reason for the verdict
+    string reason = 2;
+    
+    // Final trust level
+    double trust_level = 3;
+    
+    // Session ID for accepted handshakes
+    string session_id = 4;
+    
+    // Timestamp of completion (Unix seconds)
+    int64 completed_at = 5;
+    
+    // Session expiration (Unix seconds, only for ACCEPTED)
+    int64 session_expires_at = 6;
+    
+    // Handshake duration in milliseconds
+    int64 duration_ms = 7;
+    
+    // Additional result metadata
+    map<string, string> metadata = 8;
+}
+
+// ============================================================================
+// HANDSHAKE STATE TRACKING
+// ============================================================================
+
+// Handshake state for persistence and recovery
+message HandshakeState {
+    // Handshake session ID
+    string session_id = 1;
+    
+    // Local OCX instance ID
+    string local_instance_id = 2;
+    
+    // Remote OCX instance ID
+    string remote_instance_id = 3;
+    
+    // Current state
+    State current_state = 4;
+    
+    // Timestamp when handshake started (Unix seconds)
+    int64 started_at = 5;
+    
+    // Timestamp of last state transition (Unix seconds)
+    int64 last_updated_at = 6;
+    
+    // Handshake timeout (Unix seconds)
+    int64 timeout_at = 7;
+    
+    // Stored nonce for verification
+    string nonce = 8;
+    
+    // Stored challenge for verification
+    bytes challenge = 9;
+    
+    // Error message if any
+    string error = 10;
+    
+    enum State {
+        INIT = 0;
+        HELLO_SENT = 1;
+        HELLO_RECEIVED = 2;
+        CHALLENGE_SENT = 3;
+        CHALLENGE_RECEIVED = 4;
+        PROOF_SENT = 5;
+        PROOF_RECEIVED = 6;
+        VERIFIED = 7;
+        ATTESTATION_SENT = 8;
+        ATTESTATION_RECEIVED = 9;
+        ACCEPTED = 10;
+        REJECTED = 11;
+        TIMEOUT = 12;
+        ERROR = 13;
+    }
+}
+
+// ============================================================================
+// gRPC SERVICE DEFINITION
+// ============================================================================
+
+service InterOCXHandshakeService {
+    // Initiate a new handshake (Step 1: HELLO)
+    rpc InitiateHandshake(HandshakeHello) returns (HandshakeChallenge);
+    
+    // Respond to challenge (Step 3: PROOF)
+    rpc RespondToChallenge(HandshakeProof) returns (HandshakeVerify);
+    
+    // Exchange attestation (Step 5: ATTESTATION)
+    rpc ExchangeAttestation(HandshakeAttestation) returns (HandshakeResult);
+    
+    // Full bidirectional streaming handshake (all 6 steps)
+    rpc PerformHandshake(stream HandshakeMessage) returns (stream HandshakeMessage);
+    
+    // Get handshake status
+    rpc GetHandshakeStatus(HandshakeStatusRequest) returns (HandshakeState);
+}
+
+// Wrapper message for streaming handshake
+message HandshakeMessage {
+    oneof message {
+        HandshakeHello hello = 1;
+        HandshakeChallenge challenge = 2;
+        HandshakeProof proof = 3;
+        HandshakeVerify verify = 4;
+        HandshakeAttestation attestation = 5;
+        HandshakeResult result = 6;
+    }
+}
+
+// Request to get handshake status
+message HandshakeStatusRequest {
+    string session_id = 1;
+}

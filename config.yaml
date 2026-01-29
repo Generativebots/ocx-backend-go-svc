@@ -1,0 +1,40 @@
+server:
+  port: "8080"
+  env: "production"
+
+trust:
+  weights:
+    audit: 0.4
+    reputation: 0.3
+    attestation: 0.2
+    history: 0.1
+  secrets:
+    visual_key: "secret_visual_key_123"
+    test_key: "secret_test_key_789"
+
+handshake:
+  session_expiry_minutes: 5
+  supported_versions: ["1.0.0"]
+
+governance:
+  committee_size: 22
+
+network:
+  initial_node_count: 150
+
+contracts:
+  runtime_timeout_ms: 5000
+  enforce_use_case_link: true
+  max_active_contracts: 50
+
+monitoring:
+  entropy_threshold: 0.85
+  latency_alert_ms: 200
+  enable_live_stream: true
+
+simulation:
+  max_batch_size: 100
+  retention_days: 30
+
+impact:
+  monte_carlo_iterations: 1000

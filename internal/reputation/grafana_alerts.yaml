@@ -1,0 +1,253 @@
+# Grafana Alert Rules for Economic Barrier
+# Deploy to: /etc/grafana/provisioning/alerting/
+
+apiVersion: 1
+
+groups:
+  - name: economic_barrier_alerts
+    interval: 30s
+    rules:
+      # Alert: High Entropy Detected
+      - uid: agent_high_entropy_quarantine
+        title: Agent High Entropy Quarantine
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: escrow_entropy_score{agent_id=~".+"} > 4.8
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 4.8
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  type: query
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 2m
+        annotations:
+          description: "Agent {{ $labels.agent_id }} has high entropy ({{ $value }}), indicating possible randomness attack"
+          summary: "High entropy detected for agent {{ $labels.agent_id }}"
+        labels:
+          severity: critical
+          component: economic_barrier
+        isPaused: false
+
+      # Alert: Low Entropy Detected (Collusion)
+      - uid: agent_low_entropy_quarantine
+        title: Agent Low Entropy Quarantine
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: escrow_entropy_score{agent_id=~".+"} < 1.2
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 1.2
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  type: query
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 2m
+        annotations:
+          description: "Agent {{ $labels.agent_id }} has low entropy ({{ $value }}), indicating possible collusion"
+          summary: "Low entropy detected for agent {{ $labels.agent_id }}"
+        labels:
+          severity: critical
+          component: economic_barrier
+        isPaused: false
+
+      # Alert: Agent Balance Depleted
+      - uid: agent_balance_depleted
+        title: Agent Balance Depleted
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: escrow_agent_balance{agent_id=~".+"} < 100
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 100
+                    type: lt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  type: query
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 1m
+        annotations:
+          description: "Agent {{ $labels.agent_id }} balance is {{ $value }}, below minimum threshold"
+          summary: "Agent {{ $labels.agent_id }} has insufficient balance"
+        labels:
+          severity: warning
+          component: economic_barrier
+        isPaused: false
+
+      # Alert: High Transaction Failure Rate
+      - uid: high_transaction_failure_rate
+        title: High Transaction Failure Rate
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                (
+                  rate(escrow_transaction_total{status="shredded"}[5m])
+                  /
+                  rate(escrow_transaction_total[5m])
+                ) * 100
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: reduce
+              expression: A
+              reducer: last
+              refId: B
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 50
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - C
+                  type: query
+              refId: C
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          description: "Agent {{ $labels.agent_id }} has {{ $value }}% transaction failure rate"
+          summary: "High failure rate for agent {{ $labels.agent_id }}"
+        labels:
+          severity: warning
+          component: economic_barrier
+        isPaused: false
+
+# Contact Points (Webhook for Quarantine)
+contactPoints:
+  - name: quarantine_webhook
+    receivers:
+      - uid: quarantine_webhook_receiver
+        type: webhook
+        settings:
+          url: http://backend:8080/api/quarantine/webhook
+          httpMethod: POST
+          maxAlerts: 0
+        disableResolveMessage: false
+
+# Notification Policies
+policies:
+  - receiver: quarantine_webhook
+    group_by:
+      - agent_id
+    group_wait: 10s
+    group_interval: 5m
+    repeat_interval: 24h
+    matchers:
+      - severity = critical
+      - component = economic_barrier

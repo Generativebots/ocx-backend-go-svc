@@ -1,0 +1,11 @@
+tenants:
+  "tenant-a":
+    trust:
+      weights:
+        audit: 0.8
+        reputation: 0.1
+        attestation: 0.05
+        history: 0.05
+  "tenant-b":
+    handshake:
+      session_expiry_minutes: 30

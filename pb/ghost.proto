@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package ghost.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service AuditBridge {
+  // Bi-directional stream for real-time shadow execution monitoring
+  rpc StreamGhostTelemetry(stream GhostEvent) returns (stream JuryVerdict);
+}
+
+service PoolService {
+  // Returns a stream of real-time pool metrics for the UI heatmap
+  rpc WatchPoolStats(WatchRequest) returns (stream PoolStats);
+
+  // Allows the UI to manually adjust scaling parameters
+  rpc UpdateConfig(ConfigUpdate) returns (ActionResponse);
+
+  // Emergency trigger to kill all active ghost sessions
+  rpc PurgePool(PurgeRequest) returns (ActionResponse);
+}
+
+message GhostEvent {
+  string turn_id = 1;
+  string agent_id = 2;
+  string tenant_id = 7;        // Multi-Tenancy
+  string syscall_name = 3;
+  bytes payload = 4;           // The actual data (e.g., write buffer, network packet)
+  string resource_path = 5;    // The file path or IP address targeted
+  google.protobuf.Timestamp observed_at = 6;
+}
+
+message JuryVerdict {
+  string turn_id = 1;
+  enum Decision {
+    PENDING = 0;
+    APPROVED = 1;
+    REJECTED = 2;
+    MANUAL_REQUIRED = 3;
+  }
+  Decision decision = 2;
+  string reason = 3;
+}
+
+// --- Pool Management Messages ---
+
+message PoolStats {
+  int32 active_containers = 1;
+  int32 idle_containers = 2;
+  int32 total_capacity = 3;
+  double avg_recycle_latency_ms = 4;
+  repeated string container_ids = 5;
+}
+
+message ConfigUpdate {
+  int32 min_idle = 1;
+  int32 max_capacity = 2;
+  string ghost_image_tag = 3;
+}
+
+message WatchRequest {}
+message PurgeRequest { string reason = 1; }
+message ActionResponse { bool success = 1; string message = 2; }

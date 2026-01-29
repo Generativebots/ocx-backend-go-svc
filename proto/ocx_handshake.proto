@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package ocx.v1;
+
+option go_package = "github.com/ocx/backend/gen/proto/v1;ocxv1";
+
+// HandshakeService defines the 6-step security protocol
+service HandshakeService {
+  rpc Hello(HelloRequest) returns (HelloResponse);
+  rpc Challenge(ChallengeRequest) returns (ChallengeResponse);
+  rpc Proof(ProofRequest) returns (ProofResponse);
+  rpc Verify(VerifyRequest) returns (VerifyResponse);
+  rpc Attest(AttestationRequest) returns (AttestationResponse);
+  rpc Finalize(FinalizeRequest) returns (FinalizeResponse);
+}
+
+// 1. HELLO: Initiator introduces themselves
+message HelloRequest {
+  string initiator_id = 1;
+  string version = 2; // e.g., "1.0.0"
+  string tenant_id = 3;
+}
+
+message HelloResponse {
+  string session_id = 1;
+  string status = 2; // "HELLO_ACK"
+  string supported_versions = 3;
+}
+
+// 2. CHALLENGE: Responder sends a crypto puzzle
+message ChallengeRequest {
+  string session_id = 1;
+}
+
+message ChallengeResponse {
+  string nonce = 1; // Random string to be signed
+  int32 difficulty = 2; // For PoW if needed (optional)
+  string algorithm = 3; // "SHA256-RSA"
+}
+
+// 3. PROOF: Initiator solves/signs the challenge
+message ProofRequest {
+  string session_id = 1;
+  string signed_nonce = 2; // Signature of the nonce
+  string public_key = 3;   // To verify signature
+}
+
+message ProofResponse {
+  string status = 1; // "PROOF_ACCEPTED" or "PROOF_REJECTED"
+  string reason = 2;
+}
+
+// 4. VERIFY: Responder validates identity against Registry
+message VerifyRequest {
+  string session_id = 1;
+}
+
+message VerifyResponse {
+  bool is_verified = 1;
+  string registry_status = 2; // "ACTIVE", "SUSPENDED"
+}
+
+// 5. ATTESTATION: Exchange of Claims / Capabilities
+message AttestationRequest {
+  string session_id = 1;
+  map<string, string> claims = 2; // e.g. "role": "auditor", "clearance": "L3"
+}
+
+message AttestationResponse {
+  string status = 1; // "CLAIMS_RECEIVED"
+}
+
+// 6. FINALIZE (DECISION): Final Accept/Reject
+message FinalizeRequest {
+  string session_id = 1;
+}
+
+message FinalizeResponse {
+  string decision = 1; // "ACCEPTED" or "REJECTED"
+  string session_token = 2; // Bearer token for future requests
+  int64 expires_at = 3;
+}

@@ -1,0 +1,101 @@
+# Makefile for Socket-Level eBPF Filter
+# Builds the kernel-level tap for OCX
+
+# Paths
+EBPF_SRC = socket_filter.bpf.c
+EBPF_OBJ = socket_filter.bpf.o
+VMLINUX = vmlinux.h
+GO_SRC = ../../cmd/socket-gateway/main.go
+GO_BIN = ../../bin/socket-gateway
+
+# Tools
+CLANG ?= clang
+LLC ?= llc
+BPFTOOL ?= bpftool
+GO ?= go
+
+# Flags
+CLANG_FLAGS = -O2 -g -target bpf -D__TARGET_ARCH_x86 -I.
+GO_FLAGS = -tags netgo
+
+.PHONY: all clean vmlinux ebpf go-binary test
+
+all: vmlinux ebpf go-binary
+
+# Generate vmlinux.h from running kernel
+vmlinux:
+	@echo "Generating vmlinux.h from running kernel..."
+	@if [ ! -f $(VMLINUX) ]; then \
+		$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > $(VMLINUX); \
+		echo "✓ Generated $(VMLINUX)"; \
+	else \
+		echo "✓ $(VMLINUX) already exists"; \
+	fi
+
+# Compile eBPF program
+ebpf: $(EBPF_OBJ)
+
+$(EBPF_OBJ): $(EBPF_SRC) $(VMLINUX)
+	@echo "Compiling eBPF socket filter..."
+	$(CLANG) $(CLANG_FLAGS) -c $(EBPF_SRC) -o $(EBPF_OBJ)
+	@echo "✓ Compiled $(EBPF_OBJ)"
+
+# Build Go gateway
+go-binary: $(EBPF_OBJ)
+	@echo "Building Go socket gateway..."
+	@mkdir -p ../../bin
+	cd ../../cmd/socket-gateway && \
+	go generate && \
+	$(GO) build $(GO_FLAGS) -o $(GO_BIN)
+	@echo "✓ Built $(GO_BIN)"
+
+# Test eBPF program (requires root)
+test: all
+	@echo "Testing socket filter (requires root)..."
+	@if [ "$$(id -u)" -ne 0 ]; then \
+		echo "❌ Error: Test requires root privileges"; \
+		echo "   Run: sudo make test"; \
+		exit 1; \
+	fi
+	@echo "Starting socket gateway..."
+	sudo $(GO_BIN)
+
+# Clean build artifacts
+clean:
+	@echo "Cleaning build artifacts..."
+	rm -f $(EBPF_OBJ)
+	rm -f $(GO_BIN)
+	@echo "✓ Cleaned"
+
+# Install dependencies
+deps:
+	@echo "Installing dependencies..."
+	@echo "Checking for clang..."
+	@which clang > /dev/null || (echo "❌ clang not found. Install: apt-get install clang" && exit 1)
+	@echo "Checking for bpftool..."
+	@which bpftool > /dev/null || (echo "❌ bpftool not found. Install: apt-get install linux-tools-generic" && exit 1)
+	@echo "Installing Go dependencies..."
+	cd ../../cmd/socket-gateway && go mod download
+	@echo "✓ Dependencies installed"
+
+# Show help
+help:
+	@echo "OCX Socket Filter Makefile"
+	@echo "=========================="
+	@echo ""
+	@echo "Targets:"
+	@echo "  all         - Build everything (vmlinux + eBPF + Go binary)"
+	@echo "  vmlinux     - Generate vmlinux.h from running kernel"
+	@echo "  ebpf        - Compile eBPF socket filter"
+	@echo "  go-binary   - Build Go socket gateway"
+	@echo "  test        - Test socket filter (requires root)"
+	@echo "  clean       - Remove build artifacts"
+	@echo "  deps        - Install dependencies"
+	@echo "  help        - Show this help"
+	@echo ""
+	@echo "Environment Variables:"
+	@echo "  OCX_INTERFACE - Network interface to attach (default: eth0)"
+	@echo ""
+	@echo "Example:"
+	@echo "  make all"
+	@echo "  sudo OCX_INTERFACE=ens5 make test"

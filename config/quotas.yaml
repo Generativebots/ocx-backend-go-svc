@@ -1,0 +1,12 @@
+# Container Resource Quotas
+# Enforced by GhostPool Manager
+quota:
+  default:
+    cpu_limit: 1.0        # --cpus=1.0
+    memory_limit: 512m    # --memory=512m
+    pids_limit: 100       # Prevent forks bombs
+  
+  # Tenant overrides example
+  # tenant-gold:
+  #   cpu_limit: 2.0
+  #   memory_limit: 1g

@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package escrow.v1;
+
+service EscrowService {
+  // Submit a speculative result to held in escrow
+  rpc SubmitPrediction(EscrowItem) returns (EscrowReceipt);
+  
+  // Release a held item once signals match
+  rpc Release(ReleaseSignal) returns (ReleaseResponse);
+}
+
+service ReputationService {
+  // Get trust score for an agent
+  rpc GetTrustScore(TrustRequest) returns (TrustScore);
+  
+  // Apply a governance tax (deduction)
+  rpc LevyTax(TaxLevy) returns (TaxReceipt);
+}
+
+message EscrowItem {
+  string turn_id = 1;
+  string tenant_id = 2;
+  string agent_id = 3;
+  bytes payload = 4;
+  string target_hash = 5; // Expected hash for validation
+}
+
+message EscrowReceipt {
+  string escrow_id = 1;
+  string status = 2; // HELD, RELEASED, REJECTED
+}
+
+message ReleaseSignal {
+  string escrow_id = 1;
+  string tenant_id = 2;
+  bool jury_approved = 3;
+  bool entropy_safe = 4;
+}
+
+message ReleaseResponse {
+  bool success = 1;
+  bytes payload = 2; // The released data
+}
+
+message TrustRequest {
+  string agent_id = 1;
+  string tenant_id = 2;
+}
+
+message TrustScore {
+  double score = 1; // 0.0 to 1.0
+  string tier = 2;  // PLATINUM, GOLD, SILVER, PROBATION
+}
+
+message TaxLevy {
+  string agent_id = 1;
+  string tenant_id = 2;
+  double amount = 3;
+  string reason = 4;
+}
+
+message TaxReceipt {
+  string tx_id = 1;
+  double new_balance = 2;
+}

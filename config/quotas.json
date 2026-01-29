@@ -1,0 +1,9 @@
+{
+    "quota": {
+        "default": {
+            "cpu_limit": 1.0,
+            "memory_limit_mb": 512,
+            "pids_limit": 100
+        }
+    }
+}
