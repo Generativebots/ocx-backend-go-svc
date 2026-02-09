@@ -12,6 +12,8 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/ocx/backend/internal/database"
+	"github.com/ocx/backend/internal/fabric"
+	"github.com/ocx/backend/internal/marketplace"
 	"github.com/ocx/backend/internal/middleware"
 	"github.com/ocx/backend/internal/multitenancy"
 )
@@ -31,6 +33,10 @@ func main() {
 
 	// Initialize Tenant Manager
 	tenantManager := multitenancy.NewTenantManager(supabaseClient)
+
+	// Initialize Hub (O(n) routing layer)
+	hub := fabric.GetHub()
+	log.Printf("🌐 Hub initialized: %s (region=%s)", hub.ID, hub.Region)
 
 	// Create router
 	router := mux.NewRouter()
@@ -73,6 +79,20 @@ func main() {
 	api.HandleFunc("/agents", listAgents(supabaseClient)).Methods("GET")
 	api.HandleFunc("/agents/{id}", getAgent(supabaseClient)).Methods("GET")
 	api.HandleFunc("/agents/{id}/trust", getTrustScores(supabaseClient)).Methods("GET")
+
+	// Hub/Spoke endpoints (O(n) routing)
+	api.HandleFunc("/spokes", registerSpoke(hub)).Methods("POST")
+	api.HandleFunc("/spokes", listSpokes(hub)).Methods("GET")
+	api.HandleFunc("/hub/metrics", getHubMetrics(hub)).Methods("GET")
+
+	// WebSocket endpoint for real-time spoke connections
+	router.HandleFunc("/ws", hub.HandleWebSocket)
+
+	// Marketplace API — uses standard http.ServeMux with Go 1.22 routing
+	// Bridge to Gorilla by mounting the mux as a catch-all under /api/v1/marketplace/
+	marketplaceMux := http.NewServeMux()
+	marketplace.SetupMarketplace(marketplaceMux)
+	router.PathPrefix("/api/v1/marketplace/").Handler(marketplaceMux)
 
 	// CORS middleware for Cloud Run
 	router.Use(corsMiddleware)
@@ -220,4 +240,86 @@ func loggingMiddleware(next http.Handler) http.Handler {
 			time.Since(start).Milliseconds(),
 		)
 	})
+}
+
+// Hub/Spoke Handlers
+
+// SpokeRegistrationRequest is the request body for spoke registration
+type SpokeRegistrationRequest struct {
+	AgentID      string   `json:"agent_id"`
+	Capabilities []string `json:"capabilities"`
+	TrustScore   float64  `json:"trust_score"`
+	Entitlements []string `json:"entitlements,omitempty"`
+}
+
+func registerSpoke(hub *fabric.Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID := r.Header.Get("X-Tenant-ID")
+		if tenantID == "" {
+			tenantID = "default"
+		}
+
+		var req SpokeRegistrationRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if req.AgentID == "" {
+			http.Error(w, "agent_id is required", http.StatusBadRequest)
+			return
+		}
+
+		// Convert capabilities
+		caps := make([]fabric.Capability, len(req.Capabilities))
+		for i, c := range req.Capabilities {
+			caps[i] = fabric.Capability(c)
+		}
+
+		// Default trust score
+		if req.TrustScore == 0 {
+			req.TrustScore = 0.5
+		}
+
+		spoke, err := hub.RegisterSpoke(tenantID, req.AgentID, caps, req.TrustScore, req.Entitlements)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("Registered spoke: %s (agent=%s, tenant=%s)", spoke.ID, req.AgentID, tenantID)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(spoke)
+	}
+}
+
+func listSpokes(hub *fabric.Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		spokes := hub.GetSpokes()
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"count":  len(spokes),
+			"spokes": spokes,
+		})
+	}
+}
+
+func getHubMetrics(hub *fabric.Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		metrics := hub.GetMetrics()
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"hub_id":              hub.ID,
+			"region":              hub.Region,
+			"messages_routed":     metrics.MessagesRouted,
+			"messages_failed":     metrics.MessagesFailed,
+			"spokes_connected":    metrics.SpokesConnected,
+			"peers_connected":     metrics.PeersConnected,
+			"avg_routing_latency": metrics.AvgRoutingLatency.String(),
+		})
+	}
 }

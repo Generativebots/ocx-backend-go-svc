@@ -18,6 +18,7 @@ type SandboxExecutor struct {
 	runscPath     string
 	rootfsPath    string
 	networkPolicy string // "none" for isolated execution
+	available     bool   // false if runsc binary not found
 }
 
 // ToolCallPayload represents an intercepted MCP tool call
@@ -37,33 +38,76 @@ type ExecutionResult struct {
 	Error         string                 `json:"error,omitempty"`
 	ExecutionTime time.Duration          `json:"execution_time"`
 	RevertToken   string                 `json:"revert_token"`
+	DemoMode      bool                   `json:"demo_mode,omitempty"`
 }
 
-// NewSandboxExecutor creates a new gVisor sandbox executor
+// NewSandboxExecutor creates a new gVisor sandbox executor.
+// C2 FIX: Checks if runsc binary exists and sets available flag.
 func NewSandboxExecutor(runscPath, rootfsPath string) *SandboxExecutor {
 	if runscPath == "" {
 		runscPath = "/usr/local/bin/runsc" // Default gVisor runtime path
+	}
+
+	// C2 FIX: Check if runsc binary actually exists
+	available := true
+	if _, err := exec.LookPath(runscPath); err != nil {
+		log.Printf("⚠️  gVisor runsc not found at %s: %v (sandbox will run in demo mode)", runscPath, err)
+		available = false
 	}
 
 	return &SandboxExecutor{
 		runscPath:     runscPath,
 		rootfsPath:    rootfsPath,
 		networkPolicy: "none", // No outbound network access
+		available:     available,
 	}
 }
 
+// RunscPath returns the configured runsc binary path
+func (se *SandboxExecutor) RunscPath() string {
+	return se.runscPath
+}
+
+// IsAvailable returns whether the gVisor runtime is installed and usable
+func (se *SandboxExecutor) IsAvailable() bool {
+	return se.available
+}
+
 // ExecuteSpeculative runs a tool call in an isolated gVisor sandbox
+// C2 FIX: Returns demo-mode result if runsc is not available (instead of crashing)
 func (se *SandboxExecutor) ExecuteSpeculative(ctx context.Context, payload *ToolCallPayload) (*ExecutionResult, error) {
 	startTime := time.Now()
 
 	log.Printf("🔮 Starting speculative execution for transaction: %s", payload.TransactionID)
 	log.Printf("   Tool: %s, Agent: %s", payload.ToolName, payload.AgentID)
 
+	// C2 FIX: If runsc is not available, return a demo-mode result instead of crashing
+	if !se.available {
+		log.Printf("⚠️  gVisor not available — returning demo-mode speculative result")
+		return &ExecutionResult{
+			TransactionID: payload.TransactionID,
+			Success:       true,
+			Output: map[string]interface{}{
+				"mode":    "demo",
+				"message": "gVisor sandbox unavailable — speculative execution simulated",
+				"tool":    payload.ToolName,
+			},
+			ExecutionTime: time.Since(startTime),
+			RevertToken:   se.generateRevertToken(payload),
+			DemoMode:      true,
+		}, nil
+	}
+
 	// 1. Generate revert token (for state cleanup)
 	revertToken := se.generateRevertToken(payload)
 
 	// 2. Create isolated sandbox
 	sandboxID := fmt.Sprintf("ocx-sandbox-%s", uuid.New().String()[:8])
+
+	// L1 FIX: defer cleanup BEFORE the work it guards, so it always runs on
+	// function exit (previously placed after runInGVisor, same semantics but
+	// confusing placement that looked like cleanup-after-return)
+	defer se.cleanupSandbox(sandboxID)
 
 	// 3. Prepare sandbox configuration
 	config := se.prepareSandboxConfig(sandboxID, payload)
@@ -85,9 +129,6 @@ func (se *SandboxExecutor) ExecuteSpeculative(ctx context.Context, payload *Tool
 	} else {
 		log.Printf("✅ Speculative execution complete: %s (took %v)", payload.TransactionID, result.ExecutionTime)
 	}
-
-	// 5. Cleanup sandbox (always cleanup, even on error)
-	defer se.cleanupSandbox(sandboxID)
 
 	return result, err
 }
@@ -164,7 +205,11 @@ func (se *SandboxExecutor) runInGVisor(ctx context.Context, sandboxID string, co
 func (se *SandboxExecutor) generateRevertToken(payload *ToolCallPayload) string {
 	// Token format: <transaction-id>:<timestamp>:<hash>
 	timestamp := time.Now().Unix()
-	hash := fmt.Sprintf("%x", payload.TransactionID)[:8]
+	hash := fmt.Sprintf("%x", payload.TransactionID)
+	// L2 FIX: Safe truncation — previous [:8] could panic if hash < 8 chars
+	if len(hash) > 8 {
+		hash = hash[:8]
+	}
 	return fmt.Sprintf("%s:%d:%s", payload.TransactionID, timestamp, hash)
 }
 

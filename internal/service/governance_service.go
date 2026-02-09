@@ -76,8 +76,8 @@ func (s *GovernanceService) GetNetworkGrowth() map[string]float64 {
 	n := cfg.Network.InitialNodeCount
 	value := n * (n - 1) / 2
 	return map[string]float64{
-		"nodes":         n,
-		"network_value": value,
+		"nodes":         float64(n),
+		"network_value": float64(value),
 		"growth_rate":   0.05,
 	}
 }

@@ -58,6 +58,67 @@ struct {
 } events SEC(".maps");
 
 // ============================================================================
+// AOCS TOOL CLASSIFICATION (Per AOCS Specification)
+// ============================================================================
+
+// Action classification constants
+#define CLASS_A 0  // Reversible - Ghost-Turn (speculative execution)
+#define CLASS_B 1  // Irreversible - Atomic-Hold (HITL required)
+
+// Tool metadata for classification
+struct tool_meta_t {
+    u64 tool_id_hash;           // SHA-256 hash of tool_id string (first 64 bits)
+    u32 action_class;           // CLASS_A or CLASS_B
+    u32 reversibility_index;    // 0-100 score (0=irreversible, 100=fully reversible)
+    u32 min_reputation_score;   // Minimum trust (0-100) required to invoke
+    u32 governance_tax_mult;    // Multiplier for audit cost (100 = 1.0x)
+    u64 required_entitlements;  // Bitmask of required JIT entitlements
+    u32 hitl_required;          // 1 if HITL mandatory, 0 otherwise
+};
+
+// Tool registry: Tool ID Hash -> Tool Metadata
+#define MAX_TOOLS 1000
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_TOOLS);
+    __type(key, u64);                 // Tool ID hash
+    __type(value, struct tool_meta_t); // Tool metadata
+} tool_registry SEC(".maps");
+
+// Agent entitlements: PID -> Entitlement bitmask
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_IDENTITIES);
+    __type(key, u32);   // PID
+    __type(value, u64); // Entitlement bitmask
+} entitlement_cache SEC(".maps");
+
+// Escrow event ring buffer for Class B actions
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 512 * 1024); // 512KB for escrow events
+} escrow_events SEC(".maps");
+
+// Escrow event structure for Tri-Factor Gate processing
+struct escrow_event {
+    u32 pid;
+    u32 tid;
+    u64 cgroup_id;
+    u64 timestamp;
+    u64 tool_id_hash;
+    u32 action_class;
+    u32 tenant_id;
+    u64 binary_hash;
+    u32 trust_level;
+    u32 reversibility_index;
+    u64 required_entitlements;
+    u64 present_entitlements;
+    u32 entitlement_valid;  // 1 if all required entitlements present
+    u32 data_size;
+    u8 verdict;             // 0=pending, 1=allow, 2=block
+};
+
+// ============================================================================
 // EVENT STRUCTURE
 // ============================================================================
 
@@ -131,6 +192,65 @@ int BPF_PROG(ocx_enforce_send, struct socket *sock, struct msghdr *msg, int size
             bpf_printk("OCX HOLD: PID %d in speculative execution", pid);
             return -EAGAIN; // Tell kernel to retry
         }
+    }
+
+    // ========================================================================
+    // AOCS TOOL CLASSIFICATION CHECK (Per AOCS Specification)
+    // ========================================================================
+    
+    // In production, tool_id_hash would be extracted from payload via Deep Packet Inspection
+    // For now, we use a placeholder that would be set by the control plane
+    // The userspace control plane populates tool_registry based on classifier.go
+    
+    // Try to lookup tool metadata (tool_id_hash would be extracted from packet)
+    // This is a simplified version - production would parse the AOCS packet header
+    // to extract the 32-byte tool_id field and hash it
+    
+    // For demonstration, we check if there's an escrow hold required
+    // The control plane can populate verdict_cache with ACTION_HOLD for Class B tools
+    
+    // Get agent's current entitlements
+    u64 *agent_entitlements = bpf_map_lookup_elem(&entitlement_cache, &pid);
+    u64 entitlements = agent_entitlements ? *agent_entitlements : 0;
+    
+    // Get identity information
+    struct identity_t *ident = bpf_map_lookup_elem(&identity_cache, &pid);
+    u32 tenant_id = ident ? ident->tenant_id : 0;
+    u64 bin_hash = ident ? ident->binary_hash : 0;
+    
+    // Check if this is a CLASS_B action that requires Tri-Factor Gate
+    // In production, this would be determined by parsing the tool_id from payload
+    // For now, we use a heuristic: trust < 65 AND large payload = Class B
+    u32 is_class_b = (trust < 65 && size > 1024);
+    
+    if (is_class_b) {
+        // CLASS_B: Emit escrow event for Tri-Factor Gate validation
+        // Then BLOCK until control plane releases
+        bpf_printk("OCX CLASS_B: PID %d requires Tri-Factor Gate (size=%d, trust=%d)", pid, size, trust);
+        
+        struct escrow_event *escrow_ev = bpf_ringbuf_reserve(&escrow_events, sizeof(*escrow_ev), 0);
+        if (escrow_ev) {
+            escrow_ev->pid = pid;
+            escrow_ev->tid = tid;
+            escrow_ev->cgroup_id = bpf_get_current_cgroup_id();
+            escrow_ev->timestamp = bpf_ktime_get_ns();
+            escrow_ev->tool_id_hash = 0; // Would be extracted from packet in production
+            escrow_ev->action_class = CLASS_B;
+            escrow_ev->tenant_id = tenant_id;
+            escrow_ev->binary_hash = bin_hash;
+            escrow_ev->trust_level = trust;
+            escrow_ev->reversibility_index = 5; // Low - Class B default
+            escrow_ev->required_entitlements = 0; // From tool_registry lookup
+            escrow_ev->present_entitlements = entitlements;
+            escrow_ev->entitlement_valid = 1; // Would check required & present
+            escrow_ev->data_size = size;
+            escrow_ev->verdict = 0; // Pending - awaiting Tri-Factor Gate
+            bpf_ringbuf_submit(escrow_ev, 0);
+        }
+        
+        // ATOMIC_HOLD: Block until control plane updates verdict_cache
+        // Control plane will set verdict_cache[pid] = ACTION_ALLOW after Tri-Factor passes
+        return -EAGAIN; // Tell kernel to retry - we're in HOLD state
     }
 
     // 4. Trust-based enforcement

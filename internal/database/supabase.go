@@ -47,7 +47,7 @@ type Tenant struct {
 	SubscriptionTier string                 `json:"subscription_tier"`
 	Status           string                 `json:"status"`
 	Settings         map[string]interface{} `json:"settings"`
-	CreatedAt        time.Time              `json:"created_at"`
+	CreatedAt        string                 `json:"created_at"` // String to handle Supabase timestamp format
 }
 
 // TenantFeature represents a feature flag for a tenant
@@ -91,42 +91,42 @@ type Agent struct {
 
 // TrustScores represents trust score breakdown
 type TrustScores struct {
-	AgentID          string    `json:"agent_id"`
-	TenantID         string    `json:"tenant_id"`
-	AuditScore       float64   `json:"audit_score"`
-	ReputationScore  float64   `json:"reputation_score"`
-	AttestationScore float64   `json:"attestation_score"`
-	HistoryScore     float64   `json:"history_score"`
-	TrustLevel       float64   `json:"trust_level"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	AgentID          string  `json:"agent_id"`
+	TenantID         string  `json:"tenant_id"`
+	AuditScore       float64 `json:"audit_score"`
+	ReputationScore  float64 `json:"reputation_score"`
+	AttestationScore float64 `json:"attestation_score"`
+	HistoryScore     float64 `json:"history_score"`
+	TrustLevel       float64 `json:"trust_level"`
+	UpdatedAt        string  `json:"updated_at,omitempty"`
 }
 
 // ReputationAudit represents an audit log entry
 type ReputationAudit struct {
-	AuditID       string    `json:"audit_id,omitempty"`
-	TenantID      string    `json:"tenant_id"`
-	AgentID       string    `json:"agent_id"`
-	TransactionID string    `json:"transaction_id,omitempty"`
-	Verdict       string    `json:"verdict"`
-	TaxLevied     int64     `json:"tax_levied"`
-	EntropyDelta  float64   `json:"entropy_delta"`
-	Reasoning     string    `json:"reasoning,omitempty"`
-	CreatedAt     time.Time `json:"created_at,omitempty"`
+	AuditID       string  `json:"audit_id,omitempty"`
+	TenantID      string  `json:"tenant_id"`
+	AgentID       string  `json:"agent_id"`
+	TransactionID string  `json:"transaction_id,omitempty"`
+	Verdict       string  `json:"verdict"`
+	TaxLevied     int64   `json:"tax_levied"`
+	EntropyDelta  float64 `json:"entropy_delta"`
+	Reasoning     string  `json:"reasoning,omitempty"`
+	CreatedAt     string  `json:"created_at,omitempty"`
 }
 
 // Verdict represents a trust verdict
 type Verdict struct {
-	VerdictID  string    `json:"verdict_id,omitempty"`
-	TenantID   string    `json:"tenant_id"`
-	RequestID  string    `json:"request_id"`
-	AgentID    string    `json:"agent_id,omitempty"`
-	PID        int32     `json:"pid,omitempty"`
-	BinaryHash string    `json:"binary_hash,omitempty"`
-	Action     string    `json:"action"`
-	TrustLevel float64   `json:"trust_level,omitempty"`
-	TrustTax   float64   `json:"trust_tax,omitempty"`
-	Reasoning  string    `json:"reasoning,omitempty"`
-	CreatedAt  time.Time `json:"created_at,omitempty"`
+	VerdictID  string  `json:"verdict_id,omitempty"`
+	TenantID   string  `json:"tenant_id"`
+	RequestID  string  `json:"request_id"`
+	AgentID    string  `json:"agent_id,omitempty"`
+	PID        int32   `json:"pid,omitempty"`
+	BinaryHash string  `json:"binary_hash,omitempty"`
+	Action     string  `json:"action"`
+	TrustLevel float64 `json:"trust_level,omitempty"`
+	TrustTax   float64 `json:"trust_tax,omitempty"`
+	Reasoning  string  `json:"reasoning,omitempty"`
+	CreatedAt  string  `json:"created_at,omitempty"`
 }
 
 // HandshakeSession represents a handshake session
@@ -140,9 +140,9 @@ type HandshakeSession struct {
 	Challenge   string                 `json:"challenge,omitempty"`
 	Proof       string                 `json:"proof,omitempty"`
 	Attestation map[string]interface{} `json:"attestation,omitempty"`
-	CreatedAt   time.Time              `json:"created_at,omitempty"`
-	ExpiresAt   time.Time              `json:"expires_at,omitempty"`
-	CompletedAt *time.Time             `json:"completed_at,omitempty"`
+	CreatedAt   string                 `json:"created_at,omitempty"`
+	ExpiresAt   string                 `json:"expires_at,omitempty"`
+	CompletedAt string                 `json:"completed_at,omitempty"`
 }
 
 // AgentIdentity represents PID to AgentID mapping

@@ -1,7 +1,52 @@
-server:
-  port: "8080"
-  env: "production"
+# =============================================================================
+# OCX Go Backend - Master Configuration
+# =============================================================================
+#
+# Environment-specific overrides:
+#   - Copy to config.development.yaml or config.production.yaml
+#   - Or use environment variables (they take precedence)
+#
+# =============================================================================
 
+# -----------------------------------------------------------------------------
+# Server Configuration
+# -----------------------------------------------------------------------------
+server:
+  port: "${PORT:-8080}"
+  env: "${OCX_ENV:-development}"
+  interface: "${OCX_INTERFACE:-eth0}"
+
+# -----------------------------------------------------------------------------
+# Database Configuration (Supabase)
+# -----------------------------------------------------------------------------
+database:
+  supabase:
+    url: "${SUPABASE_URL}"
+    service_key: "${SUPABASE_SERVICE_KEY}"
+
+# -----------------------------------------------------------------------------
+# Reputation Service
+# -----------------------------------------------------------------------------
+reputation:
+  backend: "${REPUTATION_BACKEND:-supabase}"  # supabase, spanner, sqlite
+  sqlite_path: "${REPUTATION_SQLITE_PATH:-./data/reputation.db}"
+  spanner:
+    project_id: "${SPANNER_PROJECT_ID}"
+    instance_id: "${SPANNER_INSTANCE_ID}"
+    database_id: "${SPANNER_DATABASE_ID}"
+
+# -----------------------------------------------------------------------------
+# Escrow Configuration
+# -----------------------------------------------------------------------------
+escrow:
+  mode: "${ESCROW_MODE:-standard}"           # standard, strict, permissive
+  entropy_threshold: "${ENTROPY_THRESHOLD:-0.85}"
+  enable_live_capture: "${ENABLE_LIVE_CAPTURE:-false}"
+  jury_service_addr: "${JURY_SERVICE_ADDR:-localhost:50051}"
+
+# -----------------------------------------------------------------------------
+# Trust Weights (Tri-Factor Gate)
+# -----------------------------------------------------------------------------
 trust:
   weights:
     audit: 0.4
@@ -9,32 +54,72 @@ trust:
     attestation: 0.2
     history: 0.1
   secrets:
-    visual_key: "secret_visual_key_123"
-    test_key: "secret_test_key_789"
+    visual_key: "${VISUAL_SECRET_KEY:-default_visual_key}"
+    test_key: "${TEST_SECRET_KEY:-default_test_key}"
 
+# -----------------------------------------------------------------------------
+# Handshake Configuration
+# -----------------------------------------------------------------------------
 handshake:
   session_expiry_minutes: 5
-  supported_versions: ["1.0.0"]
+  supported_versions:
+    - "1.0.0"
+    - "1.1.0"
 
+# -----------------------------------------------------------------------------
+# Governance Configuration
+# -----------------------------------------------------------------------------
 governance:
   committee_size: 22
+  quorum_percentage: 0.67
+  voting_period_hours: 168    # 7 days
 
+# -----------------------------------------------------------------------------
+# Network Configuration
+# -----------------------------------------------------------------------------
 network:
   initial_node_count: 150
+  max_connections: 1000
+  heartbeat_interval_ms: 5000
 
+# -----------------------------------------------------------------------------
+# Contracts Runtime
+# -----------------------------------------------------------------------------
 contracts:
   runtime_timeout_ms: 5000
   enforce_use_case_link: true
   max_active_contracts: 50
+  sandbox_memory_mb: 256
 
+# -----------------------------------------------------------------------------
+# Monitoring & Alerts
+# -----------------------------------------------------------------------------
 monitoring:
   entropy_threshold: 0.85
   latency_alert_ms: 200
   enable_live_stream: true
+  metrics_buffer_size: 10000
 
+# -----------------------------------------------------------------------------
+# Simulation & Impact Analysis
+# -----------------------------------------------------------------------------
 simulation:
   max_batch_size: 100
   retention_days: 30
+  parallel_workers: 4
 
 impact:
   monte_carlo_iterations: 1000
+  confidence_level: 0.95
+
+# -----------------------------------------------------------------------------
+# Python Service URLs (for Go → Python communication)
+# -----------------------------------------------------------------------------
+services:
+  trust_registry_url: "${TRUST_REGISTRY_URL:-http://localhost:8000}"
+  jury_grpc_addr: "${JURY_SERVICE_ADDR:-localhost:50051}"
+  activity_registry_url: "${ACTIVITY_REGISTRY_URL:-http://localhost:8003}"
+  evidence_vault_url: "${EVIDENCE_VAULT_URL:-http://localhost:8004}"
+  authority_url: "${AUTHORITY_URL:-http://localhost:8005}"
+  monitor_url: "${MONITOR_URL:-http://localhost:8006}"
+

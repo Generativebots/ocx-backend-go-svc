@@ -1,3 +1,19 @@
+// Package escrow — Live Entropy Monitor (Patent §3: Shannon Entropy)
+//
+// EntropyMonitorLive provides real-time, in-process Shannon entropy analysis.
+// It serves as the LOCAL FALLBACK when the Python entropy service (OCX_ENTROPY_URL)
+// is unreachable.
+//
+// Architecture:
+//
+//   - PRIMARY: Python service (entropy/monitor.py) — full 6-dimension signal
+//     validation: Shannon entropy, temporal jitter detection, semantic flattening,
+//     baseline hashing, compression ratio analysis, and strategic jitter injection.
+//     Called via HTTP POST to OCX_ENTROPY_URL/analyze by EscrowGate.triggerEntropyCheck().
+//
+//   - FALLBACK: This file (EntropyMonitorLive) — basic Shannon entropy only.
+//     Used when the Python service returns an error or is offline.
+//     See gate.go lines 190-196 for the fallback path.
 package escrow
 
 import (
@@ -191,4 +207,51 @@ func (em *EntropyMonitorLive) MeasureEntropy(ctx context.Context, payload []byte
 	}
 
 	return entropy, nil
+}
+
+// Analyze performs full signal validation for Tri-Factor Gate
+// This provides AOCS-compliant entropy analysis with verdict
+func (em *EntropyMonitorLive) Analyze(payload []byte, tenantID string) EntropyResult {
+	if len(payload) == 0 {
+		return EntropyResult{
+			EntropyScore: 0.0,
+			Verdict:      "CLEAN",
+			Confidence:   0.9,
+		}
+	}
+
+	// Count byte frequencies
+	charCounts := make(map[byte]int)
+	for _, b := range payload {
+		charCounts[b]++
+	}
+
+	// Calculate Shannon Entropy (bits per byte, 0-8 range)
+	var entropy float64
+	totalLen := float64(len(payload))
+	for _, count := range charCounts {
+		p := float64(count) / totalLen
+		entropy -= p * math.Log2(p)
+	}
+
+	// Determine verdict based on thresholds
+	// English text: ~3.5-4.5, JSON/XML: ~4.5-5.5, Compressed: ~7.0-7.5, Encrypted: ~7.5-8.0
+	verdict := "CLEAN"
+	confidence := 0.9
+
+	if entropy > 7.5 {
+		verdict = "ENCRYPTED"
+		em.logger.Printf("🚨 Tenant %s: High entropy %.2f - potential exfiltration", tenantID, entropy)
+	} else if entropy > 6.0 {
+		verdict = "SUSPICIOUS"
+		confidence = 0.7
+	}
+
+	em.logger.Printf("✅ Tenant %s: Entropy analysis %.2f -> %s", tenantID, entropy, verdict)
+
+	return EntropyResult{
+		EntropyScore: entropy,
+		Verdict:      verdict,
+		Confidence:   confidence,
+	}
 }

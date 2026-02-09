@@ -96,8 +96,6 @@ func (g *TransactionIDGenerator) Generate(agentID string, payload []byte) string
 	return fmt.Sprintf("tx-%s", hash[:16])
 }
 
-// Interface Compliance
-
 func (m *MockJuryClient) Close() error {
 	return nil
 }
@@ -106,10 +104,40 @@ func (m *MockJuryClient) EvaluateTrace(ctx context.Context, traceID string, payl
 	return true, nil
 }
 
+// Assess performs a full trust assessment for Tri-Factor Gate (mock implementation)
+func (m *MockJuryClient) Assess(ctx context.Context, transactionID, tenantID string) JuryResult {
+	return JuryResult{
+		Verdict:    "ALLOW",
+		TrustLevel: 0.85,
+		Reasoning:  "Mock assessment - trust score meets threshold",
+	}
+}
+
 func (m *MockEntropyMonitor) Close() error {
 	return nil
 }
 
 func (m *MockEntropyMonitor) MeasureEntropy(ctx context.Context, payload []byte) (float64, error) {
 	return m.calculateShannonEntropy(payload), nil
+}
+
+// Analyze performs full signal validation for Tri-Factor Gate (mock implementation)
+func (m *MockEntropyMonitor) Analyze(payload []byte, tenantID string) EntropyResult {
+	entropy := m.calculateShannonEntropy(payload)
+
+	verdict := "CLEAN"
+	confidence := 0.9
+
+	if entropy > 7.5 {
+		verdict = "ENCRYPTED"
+	} else if entropy > 6.0 {
+		verdict = "SUSPICIOUS"
+		confidence = 0.7
+	}
+
+	return EntropyResult{
+		EntropyScore: entropy,
+		Verdict:      verdict,
+		Confidence:   confidence,
+	}
 }
