@@ -5,12 +5,13 @@
 *.so
 *.dylib
 
-# Built binaries (project-specific)
-server
-probe
-loadtest
-tmp_server
-.!*!tmp_server
+# Built binaries (project-specific — root-level only)
+/api
+/server
+/probe
+/loadtest
+/tmp_server
+/.!*!tmp_server
 
 # Test binary
 *.test
@@ -51,3 +52,8 @@ tmp/
 # Build output
 bin/
 dist/
+
+# AI tooling
+.gemini/
+.agent/
+*.bak
