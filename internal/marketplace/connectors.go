@@ -288,6 +288,72 @@ func (cm *ConnectorManager) SeedBuiltins() {
 				{Name: "http_delete", Description: "Execute a DELETE request", RiskLevel: "high", InputSchema: map[string]interface{}{"path": "string"}},
 			},
 		},
+
+		// =========================================================
+		// P1 — OpenAI GPT-4
+		// =========================================================
+		{
+			ID:             "conn-openai",
+			Name:           "OpenAI GPT-4",
+			Slug:           "openai-gpt4",
+			Description:    "Enterprise AI connector for OpenAI GPT-4 and GPT-4o models. Chat completions, embeddings, function calling, and vision. Governed by AOCS trust enforcement.",
+			Category:       CatAI,
+			PublisherID:    "ocx-system",
+			PublisherName:  "OCX Built-in",
+			IconURL:        "/icons/openai.svg",
+			Version:        "1.0.0",
+			IsVerified:     true,
+			IsPublic:       true,
+			IsBuiltIn:      true,
+			InstallCount:   1250,
+			Rating:         4.9,
+			PricingTier:    PricingPro,
+			MonthlyCredits: 200,
+			ConfigSchema: map[string]interface{}{
+				"api_key":      map[string]interface{}{"type": "secret", "required": true, "label": "OpenAI API Key"},
+				"organization": map[string]interface{}{"type": "string", "required": false, "label": "Organization ID"},
+				"model":        map[string]interface{}{"type": "select", "options": []string{"gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"}, "default": "gpt-4o", "label": "Default Model"},
+				"max_tokens":   map[string]interface{}{"type": "number", "default": 4096, "label": "Max Tokens"},
+			},
+			Actions: []ConnectorAction{
+				{Name: "chat_completion", Description: "Generate a chat completion response", RiskLevel: "medium", InputSchema: map[string]interface{}{"messages": "array", "model": "string", "temperature": "number"}},
+				{Name: "create_embedding", Description: "Generate text embeddings", RiskLevel: "low", InputSchema: map[string]interface{}{"input": "string", "model": "string"}},
+				{Name: "function_call", Description: "Execute a function call via GPT-4", RiskLevel: "high", InputSchema: map[string]interface{}{"messages": "array", "functions": "array"}},
+			},
+		},
+
+		// =========================================================
+		// P1 — Google Gemini
+		// =========================================================
+		{
+			ID:             "conn-gemini",
+			Name:           "Google Gemini",
+			Slug:           "google-gemini",
+			Description:    "Enterprise AI connector for Google Gemini Pro and Ultra models. Multi-modal generation, structured output, and grounding. Governed by AOCS trust enforcement.",
+			Category:       CatAI,
+			PublisherID:    "ocx-system",
+			PublisherName:  "OCX Built-in",
+			IconURL:        "/icons/gemini.svg",
+			Version:        "1.0.0",
+			IsVerified:     true,
+			IsPublic:       true,
+			IsBuiltIn:      true,
+			InstallCount:   890,
+			Rating:         4.7,
+			PricingTier:    PricingPro,
+			MonthlyCredits: 200,
+			ConfigSchema: map[string]interface{}{
+				"api_key":    map[string]interface{}{"type": "secret", "required": true, "label": "Gemini API Key"},
+				"project_id": map[string]interface{}{"type": "string", "required": false, "label": "Google Cloud Project ID"},
+				"model":      map[string]interface{}{"type": "select", "options": []string{"gemini-pro", "gemini-ultra", "gemini-1.5-pro", "gemini-1.5-flash"}, "default": "gemini-1.5-pro", "label": "Default Model"},
+				"region":     map[string]interface{}{"type": "string", "default": "us-central1", "label": "Region"},
+			},
+			Actions: []ConnectorAction{
+				{Name: "generate_content", Description: "Generate content from text or multi-modal input", RiskLevel: "medium", InputSchema: map[string]interface{}{"prompt": "string", "model": "string", "temperature": "number"}},
+				{Name: "create_embedding", Description: "Generate text embeddings via Gemini", RiskLevel: "low", InputSchema: map[string]interface{}{"content": "string", "model": "string"}},
+				{Name: "structured_output", Description: "Generate structured JSON output with schema validation", RiskLevel: "medium", InputSchema: map[string]interface{}{"prompt": "string", "response_schema": "object"}},
+			},
+		},
 	}
 
 	cm.svc.mu.Lock()

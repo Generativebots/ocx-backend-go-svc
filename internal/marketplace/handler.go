@@ -36,6 +36,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Search
 	mux.HandleFunc("GET /api/v1/marketplace/search", h.searchAll)
 
+	// Published items (tenant-scoped)
+	mux.HandleFunc("GET /api/v1/marketplace/published", h.listPublished)
+
 	// Installations (tenant-scoped)
 	mux.HandleFunc("GET /api/v1/marketplace/installations", h.listInstallations)
 	mux.HandleFunc("POST /api/v1/marketplace/install/connector", h.installConnector)
@@ -43,6 +46,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/marketplace/uninstall", h.uninstallItem)
 	mux.HandleFunc("POST /api/v1/marketplace/installations/{id}/pause", h.pauseInstallation)
 	mux.HandleFunc("POST /api/v1/marketplace/installations/{id}/resume", h.resumeInstallation)
+	mux.HandleFunc("PUT /api/v1/marketplace/installations/{id}/config", h.updateInstallationConfig)
 
 	// Billing
 	mux.HandleFunc("GET /api/v1/marketplace/billing/summary", h.billingSummary)
@@ -89,12 +93,13 @@ func (h *Handler) listConnectors(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getConnector(w http.ResponseWriter, r *http.Request) {
+	tenantID := extractTenantID(r)
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "connector id required")
 		return
 	}
-	conn, err := h.svc.GetConnector(id)
+	conn, err := h.svc.GetConnector(tenantID, id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -111,6 +116,7 @@ type publishConnectorReq struct {
 	Version      string                 `json:"version"`
 	ConfigSchema map[string]interface{} `json:"config_schema"`
 	Actions      []ConnectorAction      `json:"actions"`
+	IsPublic     *bool                  `json:"is_public"`
 }
 
 func (h *Handler) publishConnector(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +135,7 @@ func (h *Handler) publishConnector(w http.ResponseWriter, r *http.Request) {
 		Version:      req.Version,
 		ConfigSchema: req.ConfigSchema,
 		Actions:      req.Actions,
-		IsPublic:     true,
+		IsPublic:     req.IsPublic == nil || *req.IsPublic, // defaults to true
 	}
 	if err := h.svc.connectorMgr.PublishConnector(tenantID, conn); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
@@ -148,12 +154,13 @@ func (h *Handler) listTemplates(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getTemplate(w http.ResponseWriter, r *http.Request) {
+	tenantID := extractTenantID(r)
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "template id required")
 		return
 	}
-	tmpl, err := h.svc.GetTemplate(id)
+	tmpl, err := h.svc.GetTemplate(tenantID, id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -172,6 +179,7 @@ type publishTemplateReq struct {
 	Dependencies   []string               `json:"dependencies"`
 	IndustryTags   []string               `json:"industry_tags"`
 	StepCount      int                    `json:"step_count"`
+	IsPublic       *bool                  `json:"is_public"`
 }
 
 func (h *Handler) publishTemplate(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +200,7 @@ func (h *Handler) publishTemplate(w http.ResponseWriter, r *http.Request) {
 		Dependencies:   req.Dependencies,
 		IndustryTags:   req.IndustryTags,
 		StepCount:      req.StepCount,
-		IsPublic:       true,
+		IsPublic:       req.IsPublic == nil || *req.IsPublic, // defaults to true
 	}
 	if err := h.svc.templateMgr.PublishTemplate(tenantID, tmpl); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
@@ -313,6 +321,35 @@ func (h *Handler) resumeInstallation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "active"})
+}
+
+// --- Published Items ---
+
+func (h *Handler) listPublished(w http.ResponseWriter, r *http.Request) {
+	tenantID := extractTenantID(r)
+	connectors, templates := h.svc.ListPublished(tenantID)
+	writeJSON(w, http.StatusOK, searchResult{Connectors: connectors, Templates: templates})
+}
+
+// --- Config Update ---
+
+type updateConfigReq struct {
+	Config map[string]interface{} `json:"config"`
+}
+
+func (h *Handler) updateInstallationConfig(w http.ResponseWriter, r *http.Request) {
+	tenantID := extractTenantID(r)
+	instID := r.PathValue("id")
+	var req updateConfigReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if err := h.svc.installer.UpdateConfig(tenantID, instID, req.Config); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "config_updated"})
 }
 
 // --- Billing ---

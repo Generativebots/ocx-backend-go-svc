@@ -219,8 +219,8 @@ func (s *Service) ListTemplates(tenantID string, category string) []*Template {
 	return results
 }
 
-// GetConnector returns a single connector by ID.
-func (s *Service) GetConnector(id string) (*Connector, error) {
+// GetConnector returns a single connector by ID, enforcing visibility.
+func (s *Service) GetConnector(tenantID, id string) (*Connector, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -228,16 +228,24 @@ func (s *Service) GetConnector(id string) (*Connector, error) {
 	if !ok {
 		return nil, fmt.Errorf("connector %s not found", id)
 	}
+	// Visibility check: public OR published by tenant
+	if !c.IsPublic && c.PublisherID != tenantID {
+		return nil, fmt.Errorf("connector %s not found", id)
+	}
 	return c, nil
 }
 
-// GetTemplate returns a single template by ID.
-func (s *Service) GetTemplate(id string) (*Template, error) {
+// GetTemplate returns a single template by ID, enforcing visibility.
+func (s *Service) GetTemplate(tenantID, id string) (*Template, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	t, ok := s.templates[id]
 	if !ok {
+		return nil, fmt.Errorf("template %s not found", id)
+	}
+	// Visibility check: public OR published by tenant
+	if !t.IsPublic && t.PublisherID != tenantID {
 		return nil, fmt.Errorf("template %s not found", id)
 	}
 	return t, nil
@@ -283,6 +291,29 @@ func (s *Service) SearchAll(tenantID, query string) ([]*Connector, []*Template) 
 		}
 		if strings.Contains(strings.ToLower(t.Name), lowerQuery) ||
 			strings.Contains(strings.ToLower(t.Description), lowerQuery) {
+			templates = append(templates, t)
+		}
+	}
+
+	return connectors, templates
+}
+
+// ListPublished returns all items published by a given tenant.
+func (s *Service) ListPublished(tenantID string) ([]*Connector, []*Template) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var connectors []*Connector
+	var templates []*Template
+
+	for _, c := range s.connectors {
+		if c.PublisherID == tenantID {
+			connectors = append(connectors, c)
+		}
+	}
+
+	for _, t := range s.templates {
+		if t.PublisherID == tenantID {
 			templates = append(templates, t)
 		}
 	}
