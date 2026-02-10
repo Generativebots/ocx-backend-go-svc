@@ -6,7 +6,7 @@
 package escrow
 
 import (
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +32,9 @@ type SocketMeter struct {
 
 	// Callbacks
 	onBillingEvent func(event *MeterBillingEvent)
+
+	// L4 FIX: Stop channel for graceful shutdown of background goroutine
+	stopEvict chan struct{}
 }
 
 // TenantMeter tracks per-tenant metering state.
@@ -84,6 +87,7 @@ func NewSocketMeter() *SocketMeter {
 	sm := &SocketMeter{
 		tenantMeters:     make(map[string]*TenantMeter),
 		baseCostPerFrame: 0.001, // 0.001 credits per frame baseline
+		stopEvict:        make(chan struct{}),
 		riskMultipliers: map[string]float64{
 			// §4.1: Dynamic cost multiplier based on tool risk
 			"data_query":    1.0, // Low risk — baseline
@@ -100,6 +104,11 @@ func NewSocketMeter() *SocketMeter {
 			"unknown":       2.0, // Default to medium
 		},
 	}
+
+	// P1 FIX #8: Start background reaper to evict stale tenant meters.
+	// Without this, tenantMeters map grows unbounded and leaks memory.
+	go sm.evictStaleTenants()
+
 	return sm
 }
 
@@ -231,6 +240,42 @@ func (sm *SocketMeter) updateTenantMeter(tenantID string, cost, tax float64) {
 // LogMeterStats logs current meter statistics (called from stats reporter).
 func (sm *SocketMeter) LogMeterStats() {
 	snap := sm.GetSnapshot()
-	log.Printf("💰 Socket Meter: frames=%d credits=%d tax=%d tenants=%d",
-		snap.TotalFrames, snap.TotalCredits, snap.TotalTaxed, snap.ActiveTenants)
+	slog.Info("Socket Meter: frames= credits= tax= tenants", "total_frames", snap.TotalFrames, "total_credits", snap.TotalCredits, "total_taxed", snap.TotalTaxed, "active_tenants", snap.ActiveTenants)
+}
+
+// evictStaleTenants periodically removes tenant meters that have been idle
+// for more than 1 hour, preventing unbounded memory growth.
+// P1 FIX #8: Without this, the tenantMeters map grows forever.
+func (sm *SocketMeter) evictStaleTenants() {
+	const evictAfter = 1 * time.Hour
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			sm.mu.Lock()
+			now := time.Now()
+			var evicted int
+			for id, tm := range sm.tenantMeters {
+				if now.Sub(tm.LastFrameAt) > evictAfter {
+					delete(sm.tenantMeters, id)
+					evicted++
+				}
+			}
+			sm.mu.Unlock()
+
+			if evicted > 0 {
+				slog.Info("Socket Meter: evicted stale tenant meters", "evicted", evicted)
+			}
+		case <-sm.stopEvict:
+			slog.Info("🛑 Socket Meter: eviction goroutine stopped")
+			return
+		}
+	}
+}
+
+// Stop signals the background eviction goroutine to exit.
+func (sm *SocketMeter) Stop() {
+	close(sm.stopEvict)
 }

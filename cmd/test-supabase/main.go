@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 
 	"github.com/joho/godotenv"
@@ -13,7 +14,7 @@ import (
 func main() {
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using environment variables")
+		slog.Info("No .env file found, using environment variables")
 	}
 
 	// Check env vars

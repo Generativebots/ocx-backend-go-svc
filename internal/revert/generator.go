@@ -2,7 +2,7 @@ package revert
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 )
 
@@ -13,7 +13,7 @@ type Generator struct{}
 func (g *Generator) UndoFileCreation(path string) UndoFunc {
 	return func(ctx context.Context) error {
 		if _, err := os.Stat(path); err == nil {
-			log.Printf("Reverting: Deleting speculative file %s", path)
+			slog.Info("Reverting: Deleting speculative file", "path", path)
 			return os.Remove(path)
 		}
 		return nil
@@ -24,7 +24,7 @@ func (g *Generator) UndoFileCreation(path string) UndoFunc {
 // Note: This relies on a hypothetical DBLayer interface. Mocked here.
 func (g *Generator) UndoDatabaseUpdate(rowID string, preState []byte) UndoFunc {
 	return func(ctx context.Context) error {
-		log.Printf("Reverting: Restoring row %s to pre-speculation state", rowID)
+		slog.Info("Reverting: Restoring row to pre-speculation state", "row_i_d", rowID)
 		// db.UpdateRow(ctx, rowID, preState)
 		return nil
 	}

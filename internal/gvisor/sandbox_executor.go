@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,7 +51,7 @@ func NewSandboxExecutor(runscPath, rootfsPath string) *SandboxExecutor {
 	// C2 FIX: Check if runsc binary actually exists
 	available := true
 	if _, err := exec.LookPath(runscPath); err != nil {
-		log.Printf("⚠️  gVisor runsc not found at %s: %v (sandbox will run in demo mode)", runscPath, err)
+		slog.Info("gVisor runsc not found at : (sandbox will run in demo mode)", "runsc_path", runscPath, "error", err)
 		available = false
 	}
 
@@ -78,12 +78,11 @@ func (se *SandboxExecutor) IsAvailable() bool {
 func (se *SandboxExecutor) ExecuteSpeculative(ctx context.Context, payload *ToolCallPayload) (*ExecutionResult, error) {
 	startTime := time.Now()
 
-	log.Printf("🔮 Starting speculative execution for transaction: %s", payload.TransactionID)
-	log.Printf("   Tool: %s, Agent: %s", payload.ToolName, payload.AgentID)
-
+	slog.Info("Starting speculative execution for transaction", "transaction_i_d", payload.TransactionID)
+	slog.Info("Tool: , Agent", "tool_name", payload.ToolName, "agent_i_d", payload.AgentID)
 	// C2 FIX: If runsc is not available, return a demo-mode result instead of crashing
 	if !se.available {
-		log.Printf("⚠️  gVisor not available — returning demo-mode speculative result")
+		slog.Info("⚠️  gVisor not available — returning demo-mode speculative result")
 		return &ExecutionResult{
 			TransactionID: payload.TransactionID,
 			Success:       true,
@@ -125,9 +124,9 @@ func (se *SandboxExecutor) ExecuteSpeculative(ctx context.Context, payload *Tool
 
 	if err != nil {
 		result.Error = err.Error()
-		log.Printf("❌ Speculative execution failed: %v", err)
+		slog.Warn("Speculative execution failed", "error", err)
 	} else {
-		log.Printf("✅ Speculative execution complete: %s (took %v)", payload.TransactionID, result.ExecutionTime)
+		slog.Info("Speculative execution complete: (took )", "transaction_i_d", payload.TransactionID, "execution_time", result.ExecutionTime)
 	}
 
 	return result, err
@@ -227,7 +226,7 @@ func (se *SandboxExecutor) cleanupSandbox(sandboxID string) {
 	sandboxDir := filepath.Join("/tmp", "ocx-sandboxes", sandboxID)
 	os.RemoveAll(sandboxDir)
 
-	log.Printf("🧹 Cleaned up sandbox: %s", sandboxID)
+	slog.Info("Cleaned up sandbox", "sandbox_i_d", sandboxID)
 }
 
 // VerifySandboxIsolation checks that sandbox has no network access
@@ -249,35 +248,6 @@ func (se *SandboxExecutor) VerifySandboxIsolation(sandboxID string) error {
 		return fmt.Errorf("sandbox has network access: %s", network)
 	}
 
-	log.Printf("✓ Sandbox isolation verified: %s", sandboxID)
+	slog.Info("Sandbox isolation verified", "sandbox_i_d", sandboxID)
 	return nil
-}
-
-// Example usage
-func ExampleSandboxExecutor() {
-	executor := NewSandboxExecutor("/usr/local/bin/runsc", "/var/ocx/rootfs")
-
-	payload := &ToolCallPayload{
-		TransactionID: "tx-12345",
-		AgentID:       "PROCUREMENT_BOT",
-		ToolName:      "execute_payment",
-		Parameters: map[string]interface{}{
-			"vendor": "ACME",
-			"amount": 1500,
-		},
-		Context: map[string]interface{}{
-			"user_id": "alice",
-		},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	result, err := executor.ExecuteSpeculative(ctx, payload)
-	if err != nil {
-		log.Fatalf("Execution failed: %v", err)
-	}
-
-	fmt.Printf("Result: %+v\n", result)
-	fmt.Printf("Revert Token: %s\n", result.RevertToken)
 }

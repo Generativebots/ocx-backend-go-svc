@@ -6,7 +6,7 @@ package marketplace
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -51,7 +51,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/marketplace/revenue/summary", h.revenueSummary)
 	mux.HandleFunc("GET /api/v1/marketplace/revenue/analytics", h.revenueAnalytics)
 
-	log.Println("📦 Marketplace API routes registered")
+	slog.Info("Marketplace API routes registered")
 }
 
 // --- Helper ---
@@ -71,7 +71,7 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Printf("JSON encode error: %v", err)
+		slog.Warn("JSON encode error", "error", err)
 	}
 }
 
@@ -358,8 +358,6 @@ func SetupMarketplace(mux *http.ServeMux) *Handler {
 	handler := NewHandler(svc)
 	handler.RegisterRoutes(mux)
 
-	log.Printf("📦 Marketplace ready: %d connectors, %d templates, 17 API endpoints",
-		len(svc.connectors), len(svc.templates))
-
+	slog.Info("Marketplace ready: connectors, templates, 17 API endpoints", "connectors", len(svc.connectors), "templates", len(svc.templates))
 	return handler
 }

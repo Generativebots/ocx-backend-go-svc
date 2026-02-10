@@ -12,7 +12,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"time"
@@ -98,8 +98,7 @@ func (sop *SpeculativeProxy) HandleOutbound(w http.ResponseWriter, r *http.Reque
 	txID := r.Header.Get("X-OCX-Transaction-ID")
 	agentID := r.Header.Get("X-OCX-Agent-ID")
 
-	log.Printf("📡 SOP: %s %s (TxID: %s, Agent: %s)", r.Method, r.URL.String(), txID, agentID)
-
+	slog.Info("SOP: (TxID: , Agent: )", "method", r.Method, "string", r.URL.String(), "tx_i_d", txID, "agent_i_d", agentID)
 	// Determine mode
 	mode := sop.getMode(txID)
 
@@ -123,7 +122,7 @@ func (sop *SpeculativeProxy) getMode(txID string) SpeculativeMode {
 		return ModeReal
 	}
 	if err != nil {
-		log.Printf("⚠️  Redis error: %v", err)
+		slog.Warn("Redis error", "error", err)
 		return ModeReal
 	}
 
@@ -135,8 +134,7 @@ func (sop *SpeculativeProxy) getMode(txID string) SpeculativeMode {
 
 // handleSpeculative sequester request and return mock
 func (sop *SpeculativeProxy) handleSpeculative(w http.ResponseWriter, r *http.Request, txID, _ string) {
-	log.Printf("🔒 SEQUESTERING: %s %s", r.Method, r.URL.String())
-
+	slog.Info("SEQUESTERING", "method", r.Method, "string", r.URL.String())
 	// 1. Dump full request
 	rawRequest, err := httputil.DumpRequest(r, true)
 	if err != nil {
@@ -148,7 +146,7 @@ func (sop *SpeculativeProxy) handleSpeculative(w http.ResponseWriter, r *http.Re
 	key := fmt.Sprintf("req:%s:%s", txID, r.URL.Host)
 	err = sop.cache.Set(sop.ctx, key, rawRequest, 5*time.Minute).Err()
 	if err != nil {
-		log.Printf("❌ Failed to sequester request: %v", err)
+		slog.Warn("Failed to sequester request", "error", err)
 		http.Error(w, "Sequestration failed", http.StatusInternalServerError)
 		return
 	}
@@ -163,20 +161,19 @@ func (sop *SpeculativeProxy) handleSpeculative(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusOK)
 	w.Write(mockResp)
 
-	log.Printf("✅ SEQUESTERED: %s (mock returned)", key)
+	slog.Info("SEQUESTERED: (mock returned)", "key", key)
 }
 
 // handleReal forward to actual external API
 func (sop *SpeculativeProxy) handleReal(w http.ResponseWriter, r *http.Request, txID, _ string) {
-	log.Printf("🌐 REAL EXECUTION: %s %s", r.Method, r.URL.String())
-
+	slog.Info("REAL EXECUTION", "method", r.Method, "string", r.URL.String())
 	// Check if this was previously sequestered
 	if txID != "" {
 		key := fmt.Sprintf("req:%s:%s", txID, r.URL.Host)
 		sequestered, err := sop.cache.Get(sop.ctx, key).Result()
 		if err == nil {
 			// Replay sequestered request
-			log.Printf("🔄 REPLAYING sequestered request: %s", key)
+			slog.Info("REPLAYING sequestered request", "key", key)
 			sop.replayRequest(w, r, sequestered, txID)
 			return
 		}
@@ -193,7 +190,7 @@ func (sop *SpeculativeProxy) replayRequest(w http.ResponseWriter, r *http.Reques
 	bufReader := bufio.NewReader(buf)
 	req, err := http.ReadRequest(bufReader)
 	if err != nil {
-		log.Printf("❌ Failed to parse sequestered request: %v", err)
+		slog.Warn("Failed to parse sequestered request", "error", err)
 		http.Error(w, "Replay failed", http.StatusInternalServerError)
 		return
 	}
@@ -213,7 +210,7 @@ func (sop *SpeculativeProxy) replayRequest(w http.ResponseWriter, r *http.Reques
 
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("❌ Replay request failed: %v", err)
+		slog.Warn("Replay request failed", "error", err)
 		http.Error(w, "External API error", http.StatusBadGateway)
 		return
 	}
@@ -230,7 +227,7 @@ func (sop *SpeculativeProxy) replayRequest(w http.ResponseWriter, r *http.Reques
 	key := fmt.Sprintf("req:%s:%s", txID, r.URL.Host)
 	sop.cache.Del(sop.ctx, key)
 
-	log.Printf("✅ REPLAYED: %s (status: %d)", key, resp.StatusCode)
+	slog.Info("REPLAYED: (status: )", "key", key, "status_code", resp.StatusCode)
 }
 
 // updateRequestMetadata updates timestamps, nonces, etc.
@@ -292,7 +289,7 @@ func (sop *SpeculativeProxy) ShredSequesteredRequests(txID string) error {
 		return sop.cache.Del(sop.ctx, keys...).Err()
 	}
 
-	log.Printf("🗑️  SHREDDED %d sequestered requests for tx: %s", len(keys), txID)
+	slog.Info("SHREDDED sequestered requests for tx", "count", len(keys), "tx_i_d", txID)
 	return nil
 }
 

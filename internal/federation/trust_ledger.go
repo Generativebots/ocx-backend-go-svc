@@ -10,7 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"sync"
 	"time"
@@ -174,9 +174,7 @@ func (ptl *PersistentTrustLedger) RecordHandshake(
 		ptl.attestationLog = ptl.attestationLog[len(ptl.attestationLog)-5000:]
 	}
 
-	log.Printf("🤝 Trust ledger: %s → trust=%.3f (handshake #%d, outcome=%s)",
-		remoteInstanceID, record.CurrentTrust, record.HandshakeCount, outcome)
-
+	slog.Info("Trust ledger: trust= (handshake #, outcome=)", "remote_instance_i_d", remoteInstanceID, "current_trust", record.CurrentTrust, "handshake_count", record.HandshakeCount, "outcome", outcome)
 	return &event, nil
 }
 

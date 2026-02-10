@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -69,7 +70,7 @@ func (sv *SignatureVerifier) RegisterPublisherKey(publisherID string, pubKey *ec
 	sv.mu.Lock()
 	defer sv.mu.Unlock()
 	sv.trustedKeys[publisherID] = pubKey
-	log.Printf("🔑 Registered publisher key: %s", publisherID)
+	slog.Info("Registered publisher key", "publisher_i_d", publisherID)
 }
 
 // GetPlatformPublicKey returns the platform's public key for verification.

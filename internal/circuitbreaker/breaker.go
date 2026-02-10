@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -77,7 +77,7 @@ func DefaultConfig(name string) *Config {
 			return counts.Requests >= 5 && counts.FailureRatio() > 0.5
 		},
 		OnStateChange: func(name string, from State, to State) {
-			log.Printf("[CircuitBreaker:%s] State change: %s -> %s", name, from, to)
+			slog.Info("[CircuitBreaker:] State change: ->", "name", name, "from", from, "to", to)
 		},
 	}
 }
@@ -181,8 +181,9 @@ func (cb *CircuitBreaker) Counts() Counts {
 	return cb.counts
 }
 
-// Execute runs the given function if the circuit breaker allows
-func (cb *CircuitBreaker) Execute(req func() (interface{}, error)) (interface{}, error) {
+// Execute runs the given function if the circuit breaker allows.
+// M4 FIX: Panics are caught and returned as errors instead of re-raised.
+func (cb *CircuitBreaker) Execute(req func() (interface{}, error)) (result interface{}, err error) {
 	generation, err := cb.beforeRequest()
 	if err != nil {
 		return nil, err
@@ -191,20 +192,22 @@ func (cb *CircuitBreaker) Execute(req func() (interface{}, error)) (interface{},
 	defer func() {
 		if r := recover(); r != nil {
 			cb.afterRequest(generation, false)
-			panic(r)
+			err = fmt.Errorf("panic recovered in circuit breaker [%s]: %v", cb.cfg.Name, r)
+			result = nil
 		}
 	}()
 
-	result, err := req()
+	result, err = req()
 	cb.afterRequest(generation, err == nil)
 	return result, err
 }
 
-// ExecuteContext runs the given function with context if the circuit breaker allows
+// ExecuteContext runs the given function with context if the circuit breaker allows.
+// M4 FIX: Panics are caught and returned as errors instead of re-raised.
 func (cb *CircuitBreaker) ExecuteContext(
 	ctx context.Context,
 	req func(context.Context) (interface{}, error),
-) (interface{}, error) {
+) (result interface{}, err error) {
 	generation, err := cb.beforeRequest()
 	if err != nil {
 		return nil, err
@@ -213,11 +216,12 @@ func (cb *CircuitBreaker) ExecuteContext(
 	defer func() {
 		if r := recover(); r != nil {
 			cb.afterRequest(generation, false)
-			panic(r)
+			err = fmt.Errorf("panic recovered in circuit breaker [%s]: %v", cb.cfg.Name, r)
+			result = nil
 		}
 	}()
 
-	result, err := req(ctx)
+	result, err = req(ctx)
 	cb.afterRequest(generation, err == nil)
 	return result, err
 }

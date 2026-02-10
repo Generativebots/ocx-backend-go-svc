@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -59,10 +60,18 @@ type SpokeInfo struct {
 	TrustScore   float64
 	Entitlements []string
 	ConnectedAt  time.Time
-	LastSeen     time.Time
-	MessageCount int64
-	BytesSent    int64
-	BytesRecv    int64
+	LastSeen     atomic.Value // time.Time — P0 FIX: atomic for concurrent access
+	MessageCount atomic.Int64 // P0 FIX: atomic to prevent data races
+	BytesSent    atomic.Int64 // P0 FIX: atomic to prevent data races
+	BytesRecv    atomic.Int64 // P0 FIX: atomic to prevent data races
+}
+
+// Touch atomically updates spoke stats from the WebSocket read goroutine.
+// P0 FIX #2: Previously these fields were mutated without synchronization.
+func (s *SpokeInfo) Touch(bytesRecv int64) {
+	s.LastSeen.Store(time.Now())
+	s.MessageCount.Add(1)
+	s.BytesRecv.Add(bytesRecv)
 }
 
 // RoutingEntry maps a virtual address to spoke info
@@ -79,7 +88,16 @@ type RoutingEntry struct {
 // HUB IMPLEMENTATION
 // ============================================================================
 
-// Hub is the central routing point for AOCS messages
+// Hub is the central routing point for AOCS messages.
+//
+// P1 FIX #7 — SCALING LIMITATION:
+// All spoke registrations, routing tables, capability indexes, and tenant indexes
+// are in-memory maps. A second Hub instance on another pod has zero awareness of
+// spokes connected to pod 1. For horizontal scaling, back the Hub routing table
+// with Redis (pub/sub for broadcast, hash for spoke registry) or use sticky
+// sessions with a shared discovery service.
+//
+// TODO(scale): Implement HubStore interface backed by Redis for multi-pod routing.
 type Hub struct {
 	ID        HubID
 	Region    string
@@ -122,12 +140,15 @@ type PeerHub struct {
 }
 
 // HubMetrics tracks hub performance
+// HubMetrics tracks hub performance.
+// P0 FIX #3: All fields are atomic to prevent data races when
+// incremented inside RLock-protected Route() calls.
 type HubMetrics struct {
-	MessagesRouted    int64
-	MessagesFailed    int64
-	SpokesConnected   int32
-	PeersConnected    int32
-	AvgRoutingLatency time.Duration
+	MessagesRouted    atomic.Int64
+	MessagesFailed    atomic.Int64
+	SpokesConnected   atomic.Int32
+	PeersConnected    atomic.Int32
+	AvgRoutingLatency atomic.Int64 // stored as nanoseconds
 }
 
 // MessageHandler processes messages for a specific type
@@ -177,8 +198,8 @@ func (h *Hub) RegisterSpoke(
 		TrustScore:   trustScore,
 		Entitlements: entitlements,
 		ConnectedAt:  time.Now(),
-		LastSeen:     time.Now(),
 	}
+	spoke.LastSeen.Store(time.Now())
 
 	// Register in spoke map
 	h.spokes[spokeID] = spoke
@@ -201,7 +222,7 @@ func (h *Hub) RegisterSpoke(
 	// Update tenant index
 	h.tenantIndex[tenantID] = append(h.tenantIndex[tenantID], spokeID)
 
-	h.metrics.SpokesConnected++
+	h.metrics.SpokesConnected.Add(1)
 
 	h.logger.Printf("Registered spoke: %s (tenant=%s, agent=%s, addr=%s)",
 		spokeID, tenantID, agentID, virtualAddr)
@@ -233,7 +254,7 @@ func (h *Hub) UnregisterSpoke(spokeID SpokeID) error {
 	// Remove from tenant index
 	h.tenantIndex[spoke.TenantID] = h.removeFromSlice(h.tenantIndex[spoke.TenantID], spokeID)
 
-	h.metrics.SpokesConnected--
+	h.metrics.SpokesConnected.Add(-1)
 
 	h.logger.Printf("Unregistered spoke: %s", spokeID)
 
@@ -271,7 +292,7 @@ type Message struct {
 func (h *Hub) Route(ctx context.Context, msg *Message) (*RouteResult, error) {
 	start := time.Now()
 	defer func() {
-		h.metrics.MessagesRouted++
+		h.metrics.MessagesRouted.Add(1)
 	}()
 
 	h.mu.RLock()
@@ -279,7 +300,7 @@ func (h *Hub) Route(ctx context.Context, msg *Message) (*RouteResult, error) {
 
 	// Check TTL
 	if msg.TTL <= 0 {
-		h.metrics.MessagesFailed++
+		h.metrics.MessagesFailed.Add(1)
 		return nil, fmt.Errorf("message TTL expired")
 	}
 	msg.TTL--
@@ -304,7 +325,7 @@ func (h *Hub) Route(ctx context.Context, msg *Message) (*RouteResult, error) {
 		return result, nil
 	}
 
-	h.metrics.MessagesFailed++
+	h.metrics.MessagesFailed.Add(1)
 	return nil, fmt.Errorf("no route to %s", msg.Destination)
 }
 
@@ -464,10 +485,10 @@ func (h *Hub) routeFederated(
 }
 
 func (h *Hub) deliverToSpoke(_ context.Context, msg *Message, spoke *SpokeInfo) error {
-	// In production, this would send via gRPC/WebSocket
-	spoke.MessageCount++
-	spoke.BytesRecv += int64(len(msg.Payload))
-	spoke.LastSeen = time.Now()
+	// P0 FIX: Use atomic updates for spoke stats
+	spoke.MessageCount.Add(1)
+	spoke.BytesRecv.Add(int64(len(msg.Payload)))
+	spoke.LastSeen.Store(time.Now())
 
 	h.logger.Printf("Delivered message %s to spoke %s", msg.ID, spoke.ID)
 	return nil
@@ -527,7 +548,7 @@ func (h *Hub) AddPeer(id HubID, endpoint, region string, trustLevel float64) {
 		LastHeartbeat: time.Now(),
 	}
 
-	h.metrics.PeersConnected++
+	h.metrics.PeersConnected.Add(1)
 	h.logger.Printf("Added peer hub: %s (region=%s)", id, region)
 }
 
@@ -537,7 +558,7 @@ func (h *Hub) RemovePeer(id HubID) {
 	defer h.mu.Unlock()
 
 	delete(h.peers, id)
-	h.metrics.PeersConnected--
+	h.metrics.PeersConnected.Add(-1)
 	h.logger.Printf("Removed peer hub: %s", id)
 }
 
@@ -547,8 +568,7 @@ func (h *Hub) RemovePeer(id HubID) {
 
 // GetMetrics returns hub metrics
 func (h *Hub) GetMetrics() *HubMetrics {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+	// Metrics are all atomic — no lock needed
 	return h.metrics
 }
 

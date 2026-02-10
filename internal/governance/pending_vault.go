@@ -10,12 +10,6 @@ type PendingVault struct {
 	active map[string]*SpeculativeAction
 }
 
-func NewPendingVault() *PendingVault {
-	return &PendingVault{
-		active: make(map[string]*SpeculativeAction),
-	}
-}
-
 func (v *PendingVault) Add(a *SpeculativeAction) {
 	v.mu.Lock()
 	defer v.mu.Unlock()

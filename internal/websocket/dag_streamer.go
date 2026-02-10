@@ -1,7 +1,7 @@
 package websocket
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -69,8 +69,7 @@ func (ds *DAGStreamer) Run() {
 			ds.mu.Lock()
 			ds.clients[client] = true
 			ds.mu.Unlock()
-			log.Printf("📡 WebSocket client connected (total: %d)", len(ds.clients))
-
+			slog.Info("WebSocket client connected (total: )", "clients", len(ds.clients))
 		case client := <-ds.unregister:
 			ds.mu.Lock()
 			if _, ok := ds.clients[client]; ok {
@@ -78,14 +77,13 @@ func (ds *DAGStreamer) Run() {
 				client.Close()
 			}
 			ds.mu.Unlock()
-			log.Printf("📡 WebSocket client disconnected (total: %d)", len(ds.clients))
-
+			slog.Info("WebSocket client disconnected (total: )", "clients", len(ds.clients))
 		case event := <-ds.broadcast:
 			ds.mu.RLock()
 			for client := range ds.clients {
 				err := client.WriteJSON(event)
 				if err != nil {
-					log.Printf("WebSocket write error: %v", err)
+					slog.Warn("WebSocket write error", "error", err)
 					client.Close()
 					delete(ds.clients, client)
 				}
@@ -99,7 +97,7 @@ func (ds *DAGStreamer) Run() {
 func (ds *DAGStreamer) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := ds.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("WebSocket upgrade error: %v", err)
+		slog.Warn("WebSocket upgrade error", "error", err)
 		return
 	}
 

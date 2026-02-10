@@ -11,12 +11,6 @@ type TaskGate struct {
 	activeTasks map[string]string // Map[AgentID]TransactionID
 }
 
-func NewTaskGate() *TaskGate {
-	return &TaskGate{
-		activeTasks: make(map[string]string),
-	}
-}
-
 // AcquireLock checks if the agent is already in a speculative state
 func (tg *TaskGate) AcquireLock(agentID, txID string) error {
 	tg.mu.Lock()

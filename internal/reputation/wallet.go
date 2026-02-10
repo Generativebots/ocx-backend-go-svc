@@ -4,15 +4,38 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/ocx/backend/internal/ledger"
+	"github.com/ocx/backend/internal/multitenancy"
 )
+
+// tenantFromContext extracts the tenant ID from context.
+// M3 FIX: Falls back to "default-tenant" for callers without tenant context
+// (e.g. gRPC interceptors, tests, internal calls).
+func tenantFromContext(ctx context.Context) string {
+	if id, err := multitenancy.GetTenantID(ctx); err == nil && id != "" {
+		return id
+	}
+	return "default-tenant"
+}
 
 // ReputationWallet manages 'Trust Scores' as a currency.
 // It implements the 'Governance Tax' logic.
+
+const (
+	// defaultWalletTrustScore is the neutral starting score for new agents.
+	defaultWalletTrustScore = 0.5
+	// pointToScoreFactor converts int64 point amounts to float64 score deltas.
+	pointToScoreFactor = 0.01
+	// quarantineScore is the score set when an agent is force-ejected.
+	quarantineScore = 0.0
+	// minCheckBalanceThreshold is the minimum score to pass CheckBalance.
+	minCheckBalanceThreshold = 0.2
+)
+
 type ReputationWallet struct {
 	db     *sql.DB // Abstracted Spanner/Postgres connection
 	ledger *ledger.Ledger
@@ -46,42 +69,43 @@ func NewReputationWallet(db *sql.DB) *ReputationWallet {
 // Interface Compliance Methods
 
 func (w *ReputationWallet) CheckBalance(ctx context.Context, agentID string) (bool, error) {
-	score, _ := w.GetTrustScore(ctx, agentID, "default-tenant")
-	return score > 0.2, nil // Minimum threshold
+	tenantID := tenantFromContext(ctx) // M3 FIX
+	score, _ := w.GetTrustScore(ctx, agentID, tenantID)
+	return score > minCheckBalanceThreshold, nil
 }
 
 func (w *ReputationWallet) ApplyPenalty(ctx context.Context, agentID, txID string, amount int64) error {
-	// Map int64 amount to float score (e.g. 1 point = 0.01 score)
-	tax := float64(amount) * 0.01
-	_, err := w.LevyTax(ctx, agentID, "default-tenant", tax, "Penalty Applied: "+txID)
+	tenantID := tenantFromContext(ctx) // M3 FIX
+	tax := float64(amount) * pointToScoreFactor
+	_, err := w.LevyTax(ctx, agentID, tenantID, tax, "Penalty Applied: "+txID)
 	return err
 }
 
 func (w *ReputationWallet) RewardAgent(ctx context.Context, agentID string, amount int64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	tenantID := "default-tenant" // TODO: Context should carry tenant
+	tenantID := tenantFromContext(ctx) // M3 FIX
 	key := tenantID + ":" + agentID
 	current, ok := w.cache[key]
 	if !ok {
-		current = 0.5
+		current = defaultWalletTrustScore
 	}
-	newScore := current + (float64(amount) * 0.01)
+	newScore := current + (float64(amount) * pointToScoreFactor)
 	if newScore > 1.0 {
 		newScore = 1.0
 	}
 	w.cache[key] = newScore
-	w.ledger.Append(tenantID, "REWARD", fmt.Sprintf("Agent: %s, Diff: +%.2f", agentID, float64(amount)*0.01))
+	w.ledger.Append(tenantID, "REWARD", fmt.Sprintf("Agent: %s, Diff: +%.2f", agentID, float64(amount)*pointToScoreFactor))
 	return nil
 }
 
 func (w *ReputationWallet) QuarantineAgent(ctx context.Context, agentID string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	// Set score to 0 to block
-	key := "default-tenant:" + agentID // Simplified for legacy interface
-	w.cache[key] = 0.0
-	w.ledger.Append("default-tenant", "QUARANTINE", fmt.Sprintf("Agent: %s Force Ejected", agentID))
+	tenantID := tenantFromContext(ctx) // M3 FIX
+	key := tenantID + ":" + agentID
+	w.cache[key] = quarantineScore
+	w.ledger.Append(tenantID, "QUARANTINE", fmt.Sprintf("Agent: %s Force Ejected", agentID))
 	return nil
 }
 
@@ -90,7 +114,8 @@ func (w *ReputationWallet) ProcessRecovery(ctx context.Context, agentID string, 
 }
 
 func (w *ReputationWallet) GetAgentReputation(ctx context.Context, agentID string) (*AgentReputation, error) {
-	score, _ := w.GetTrustScore(ctx, agentID, "default-tenant")
+	tenantID := tenantFromContext(ctx) // M3 FIX
+	score, _ := w.GetTrustScore(ctx, agentID, tenantID)
 	return &AgentReputation{
 		AgentID:         agentID,
 		ReputationScore: score,
@@ -115,7 +140,7 @@ func (w *ReputationWallet) GetTrustScore(ctx context.Context, agentID, tenantID 
 	if score, ok := w.cache[key]; ok {
 		return score, nil
 	}
-	return 0.5, nil // Default neutral trust
+	return defaultWalletTrustScore, nil // Default neutral trust
 }
 
 // LevyTax deducts reputation points.
@@ -126,7 +151,7 @@ func (w *ReputationWallet) LevyTax(ctx context.Context, agentID, tenantID string
 	key := tenantID + ":" + agentID
 	current, ok := w.cache[key]
 	if !ok {
-		current = 0.5
+		current = defaultWalletTrustScore
 	}
 
 	newScore := current - amount
@@ -139,7 +164,6 @@ func (w *ReputationWallet) LevyTax(ctx context.Context, agentID, tenantID string
 	diff := fmt.Sprintf("-%.2f", amount)
 	w.ledger.Append(tenantID, "LEVY_TAX", fmt.Sprintf("Agent: %s, Reason: %s, Diff: %s", agentID, reason, diff))
 
-	log.Printf("⚖️ Governance Tax: -%.2f for %s (Reason: %s). New Score: %.2f", amount, agentID, reason, newScore)
-
+	slog.Info("Governance Tax: - for (Reason: ). New Score", "amount", amount, "agent_i_d", agentID, "reason", reason, "new_score", newScore)
 	return newScore, nil
 }

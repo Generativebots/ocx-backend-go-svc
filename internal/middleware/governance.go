@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+
 	"github.com/ocx/backend/internal/core"
 )
 
@@ -35,7 +37,12 @@ func GovernanceMiddleware(engine EngineInterface, next http.HandlerFunc) http.Ha
 		// We need to read the body, inject the system prompt, and rewrite it.
 		// Note: This matches the user's snippet logic but adapted to our struct types.
 
-		bodyBytes, _ := io.ReadAll(r.Body)
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			slog.Warn("[Middleware] Failed to read request body", "error", err)
+			http.Error(w, "failed to read request body", http.StatusBadRequest)
+			return
+		}
 		r.Body.Close() // Close original body
 
 		// Attempt to parse as LLM Request (if applicable) or standard TokenRequest
@@ -50,8 +57,13 @@ func GovernanceMiddleware(engine EngineInterface, next http.HandlerFunc) http.Ha
 			sysMsg := core.Message{Role: "system", Content: GovernanceHeader}
 			llmReq.Messages = append([]core.Message{sysMsg}, llmReq.Messages...)
 
-			newBody, _ := json.Marshal(llmReq)
-			r.Body = io.NopCloser(bytes.NewBuffer(newBody))
+			newBody, err := json.Marshal(llmReq)
+			if err != nil {
+				slog.Warn("[Middleware] Failed to marshal modified request", "error", err)
+				r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			} else {
+				r.Body = io.NopCloser(bytes.NewBuffer(newBody))
+			}
 		} else {
 			// If not a chat request, just restore body (or log warning)
 			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))

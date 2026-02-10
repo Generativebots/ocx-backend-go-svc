@@ -3,12 +3,15 @@ package federation
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
+	pb "github.com/ocx/backend/pb"
 )
 
 // ============================================================================
@@ -36,6 +39,9 @@ type HandshakeSession struct {
 	trustLevel float64
 	trustTax   float64
 	verdict    string
+
+	// Dev/test fallback key (when no SPIFFE agent)
+	devKey *ecdsa.PrivateKey
 }
 
 // NewHandshakeSession creates a new 6-step handshake session
@@ -56,35 +62,52 @@ func NewHandshakeSession(local, remote *OCXInstance, ledger *TrustAttestationLed
 // ============================================================================
 
 // SendHello initiates the handshake with capability exchange
-func (hs *HandshakeSession) SendHello(ctx context.Context) (*HandshakeHelloMessage, error) {
+func (hs *HandshakeSession) SendHello(ctx context.Context) (*pb.HandshakeHello, error) {
 	// Transition state
 	if err := hs.stateMachine.Transition(StateInit, StateHelloSent); err != nil {
 		return nil, err
 	}
 
-	// Get SPIFFE SVID for identity
-	svid, err := hs.localOCX.SPIFFESource.GetX509SVID()
-	if err != nil {
-		hs.stateMachine.SetError(err)
-		return nil, fmt.Errorf("failed to get SPIFFE SVID: %w", err)
+	// Get SPIFFE SVID for identity (nil-safe for dev/test environments)
+	var spiffeID string
+	var publicKeyObj *ecdsa.PublicKey
+	if hs.localOCX.SPIFFESource != nil {
+		svid, err := hs.localOCX.SPIFFESource.GetX509SVID()
+		if err != nil {
+			hs.stateMachine.SetError(err)
+			return nil, fmt.Errorf("failed to get SPIFFE SVID: %w", err)
+		}
+		pk, ok := svid.PrivateKey.Public().(*ecdsa.PublicKey)
+		if !ok {
+			err := errors.New("not an ECDSA public key")
+			hs.stateMachine.SetError(err)
+			return nil, err
+		}
+		spiffeID = svid.ID.String()
+		publicKeyObj = pk
+	} else {
+		// Dev/test fallback: generate ephemeral ECDSA key
+		slog.Info("No SPIFFE source using dev-mode ephemeral key for", "instance_i_d", hs.localOCX.InstanceID)
+		devKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			hs.stateMachine.SetError(err)
+			return nil, fmt.Errorf("failed to generate dev key: %w", err)
+		}
+		hs.devKey = devKey
+		spiffeID = fmt.Sprintf("spiffe://dev/%s", hs.localOCX.InstanceID)
+		publicKeyObj = &devKey.PublicKey
 	}
 
-	// Extract public key
-	publicKey, ok := svid.PrivateKey.Public().(*ecdsa.PublicKey)
-	if !ok {
-		err := errors.New("not an ECDSA public key")
+	// Use resolved public key
+
+	publicKeyPEM, err := EncodePublicKeyPEM(publicKeyObj)
+	if err != nil {
 		hs.stateMachine.SetError(err)
 		return nil, err
 	}
 
-	publicKeyPEM, err := EncodePublicKeyPEM(publicKey)
-	if err != nil {
-		hs.stateMachine.SetError(err)
-		return nil, err
-	}
-
-	hello := &HandshakeHelloMessage{
-		InstanceID:      hs.localOCX.InstanceID,
+	hello := &pb.HandshakeHello{
+		InstanceId:      hs.localOCX.InstanceID,
 		Organization:    hs.localOCX.Organization,
 		ProtocolVersion: "1.0",
 		Capabilities: []string{
@@ -93,7 +116,7 @@ func (hs *HandshakeSession) SendHello(ctx context.Context) (*HandshakeHelloMessa
 			"authority_contracts",
 			"entropy_monitoring",
 		},
-		SPIFFEID:  svid.ID.String(),
+		SpiffeId:  spiffeID,
 		PublicKey: publicKeyPEM,
 		Timestamp: time.Now().Unix(),
 		Metadata: map[string]string{
@@ -102,13 +125,12 @@ func (hs *HandshakeSession) SendHello(ctx context.Context) (*HandshakeHelloMessa
 		},
 	}
 
-	log.Printf("🤝 [STEP 1/6] HELLO sent: %s → %s", hs.localOCX.InstanceID, hs.remoteOCX.InstanceID)
-
+	slog.Info("[STEP 1/6] HELLO sent", "instance_i_d", hs.localOCX.InstanceID, "instance_i_d", hs.remoteOCX.InstanceID)
 	return hello, nil
 }
 
 // ReceiveHello processes an incoming HELLO message
-func (hs *HandshakeSession) ReceiveHello(ctx context.Context, hello *HandshakeHelloMessage) error {
+func (hs *HandshakeSession) ReceiveHello(ctx context.Context, hello *pb.HandshakeHello) error {
 	// Transition state
 	if err := hs.stateMachine.Transition(StateInit, StateHelloReceived); err != nil {
 		return err
@@ -129,8 +151,7 @@ func (hs *HandshakeSession) ReceiveHello(ctx context.Context, hello *HandshakeHe
 		return err
 	}
 
-	log.Printf("✅ [STEP 1/6] HELLO received from %s", hello.InstanceID)
-
+	slog.Info("[STEP 1/6] HELLO received from", "instance_id", hello.InstanceId)
 	return nil
 }
 
@@ -139,7 +160,7 @@ func (hs *HandshakeSession) ReceiveHello(ctx context.Context, hello *HandshakeHe
 // ============================================================================
 
 // SendChallenge generates and sends a cryptographic challenge
-func (hs *HandshakeSession) SendChallenge(ctx context.Context, hello *HandshakeHelloMessage) (*HandshakeChallengeMessage, error) {
+func (hs *HandshakeSession) SendChallenge(ctx context.Context, hello *pb.HandshakeHello) (*pb.HandshakeChallenge, error) {
 	// Transition state
 	if err := hs.stateMachine.Transition(StateHelloReceived, StateChallengeSent); err != nil {
 		return nil, err
@@ -154,14 +175,14 @@ func (hs *HandshakeSession) SendChallenge(ctx context.Context, hello *HandshakeH
 	hs.nonce = nonce
 
 	// Create challenge
-	challenge, err := CreateChallenge(nonce, hello.InstanceID)
+	challenge, err := CreateChallenge(nonce, hello.InstanceId)
 	if err != nil {
 		hs.stateMachine.SetError(err)
 		return nil, err
 	}
 	hs.challenge = challenge
 
-	challengeMsg := &HandshakeChallengeMessage{
+	challengeMsg := &pb.HandshakeChallenge{
 		Nonce:                nonce,
 		Challenge:            challenge,
 		ChallengeType:        "HMAC-SHA256",
@@ -170,13 +191,12 @@ func (hs *HandshakeSession) SendChallenge(ctx context.Context, hello *HandshakeH
 		RequiredCapabilities: []string{"trust_attestation", "speculative_execution"},
 	}
 
-	log.Printf("🔐 [STEP 2/6] CHALLENGE sent with nonce: %s...", nonce[:16])
-
+	slog.Info("[STEP 2/6] CHALLENGE sent with nonce", "nonce16", nonce[:16])
 	return challengeMsg, nil
 }
 
 // ReceiveChallenge processes an incoming CHALLENGE message
-func (hs *HandshakeSession) ReceiveChallenge(ctx context.Context, challenge *HandshakeChallengeMessage) error {
+func (hs *HandshakeSession) ReceiveChallenge(ctx context.Context, challenge *pb.HandshakeChallenge) error {
 	// Transition state
 	if err := hs.stateMachine.Transition(StateHelloSent, StateChallengeReceived); err != nil {
 		return err
@@ -193,8 +213,7 @@ func (hs *HandshakeSession) ReceiveChallenge(ctx context.Context, challenge *Han
 		return err
 	}
 
-	log.Printf("✅ [STEP 2/6] CHALLENGE received")
-
+	slog.Info("✅ [STEP 2/6] CHALLENGE received")
 	return nil
 }
 
@@ -203,23 +222,31 @@ func (hs *HandshakeSession) ReceiveChallenge(ctx context.Context, challenge *Han
 // ============================================================================
 
 // GenerateProof creates a cryptographic proof response
-func (hs *HandshakeSession) GenerateProof(ctx context.Context, agentID string) (*HandshakeProofMessage, error) {
+func (hs *HandshakeSession) GenerateProof(ctx context.Context, agentID string) (*pb.HandshakeProof, error) {
 	// Transition state
 	if err := hs.stateMachine.Transition(StateChallengeReceived, StateProofSent); err != nil {
 		return nil, err
 	}
 
-	// Get SPIFFE SVID
-	svid, err := hs.localOCX.SPIFFESource.GetX509SVID()
-	if err != nil {
-		hs.stateMachine.SetError(err)
-		return nil, err
-	}
-
-	// Generate proof (sign the challenge)
-	privateKey, ok := svid.PrivateKey.(*ecdsa.PrivateKey)
-	if !ok {
-		err := errors.New("not an ECDSA private key")
+	// Get signing key (SPIFFE SVID or dev fallback)
+	var privateKey *ecdsa.PrivateKey
+	if hs.localOCX.SPIFFESource != nil {
+		svid, err := hs.localOCX.SPIFFESource.GetX509SVID()
+		if err != nil {
+			hs.stateMachine.SetError(err)
+			return nil, err
+		}
+		pk, ok := svid.PrivateKey.(*ecdsa.PrivateKey)
+		if !ok {
+			err := errors.New("not an ECDSA private key")
+			hs.stateMachine.SetError(err)
+			return nil, err
+		}
+		privateKey = pk
+	} else if hs.devKey != nil {
+		privateKey = hs.devKey
+	} else {
+		err := errors.New("no SPIFFE source or dev key available")
 		hs.stateMachine.SetError(err)
 		return nil, err
 	}
@@ -237,13 +264,19 @@ func (hs *HandshakeSession) GenerateProof(ctx context.Context, agentID string) (
 		return nil, err
 	}
 
-	// Build certificate chain
-	certChain := make([]string, len(svid.Certificates))
-	for i, cert := range svid.Certificates {
-		certChain[i] = string(cert.Raw)
+	// Build certificate chain (nil-safe for dev/test)
+	var certChain []string
+	if hs.localOCX.SPIFFESource != nil {
+		svid, svidErr := hs.localOCX.SPIFFESource.GetX509SVID()
+		if svidErr == nil {
+			certChain = make([]string, len(svid.Certificates))
+			for i, cert := range svid.Certificates {
+				certChain[i] = string(cert.Raw)
+			}
+		}
 	}
 
-	proofMsg := &HandshakeProofMessage{
+	proofMsg := &pb.HandshakeProof{
 		Proof:            proof,
 		AuditHash:        []byte(auditHash),
 		Signature:        proof, // Same as proof for ECDSA
@@ -252,13 +285,12 @@ func (hs *HandshakeSession) GenerateProof(ctx context.Context, agentID string) (
 		ProofType:        "ECDSA-SHA256",
 	}
 
-	log.Printf("📝 [STEP 3/6] PROOF generated and sent")
-
+	slog.Info("📝 [STEP 3/6] PROOF generated and sent")
 	return proofMsg, nil
 }
 
 // ReceiveProof processes and verifies an incoming PROOF message
-func (hs *HandshakeSession) ReceiveProof(ctx context.Context, proof *HandshakeProofMessage) error {
+func (hs *HandshakeSession) ReceiveProof(ctx context.Context, proof *pb.HandshakeProof) error {
 	// Transition state
 	if err := hs.stateMachine.Transition(StateChallengeSent, StateProofReceived); err != nil {
 		return err
@@ -292,8 +324,7 @@ func (hs *HandshakeSession) ReceiveProof(ctx context.Context, proof *HandshakePr
 		return err
 	}
 
-	log.Printf("✅ [STEP 3/6] PROOF verified successfully")
-
+	slog.Info("✅ [STEP 3/6] PROOF verified successfully")
 	return nil
 }
 
@@ -302,7 +333,7 @@ func (hs *HandshakeSession) ReceiveProof(ctx context.Context, proof *HandshakePr
 // ============================================================================
 
 // PerformVerification verifies the proof and calculates trust scores
-func (hs *HandshakeSession) PerformVerification(ctx context.Context, proof *HandshakeProofMessage, agentID string) (*HandshakeVerifyMessage, error) {
+func (hs *HandshakeSession) PerformVerification(ctx context.Context, proof *pb.HandshakeProof, agentID string) (*pb.HandshakeVerify, error) {
 	// Transition state
 	if err := hs.stateMachine.Transition(StateProofReceived, StateVerified); err != nil {
 		return nil, err
@@ -325,11 +356,11 @@ func (hs *HandshakeSession) PerformVerification(ctx context.Context, proof *Hand
 	// Calculate weighted trust level
 	trustLevel := hs.calculateWeightedTrust(attestation, proof)
 
-	verifyMsg := &HandshakeVerifyMessage{
+	verifyMsg := &pb.HandshakeVerify{
 		Verified:   true,
 		TrustLevel: trustLevel,
 		VerifiedAt: time.Now().Unix(),
-		Details: &VerificationDetails{
+		Details: &pb.VerificationDetails{
 			AuditHashMatch:   true,
 			SignatureValid:   true,
 			CertificateValid: true,
@@ -342,8 +373,7 @@ func (hs *HandshakeSession) PerformVerification(ctx context.Context, proof *Hand
 		Warnings: []string{},
 	}
 
-	log.Printf("🔍 [STEP 4/6] VERIFY complete: trust_level=%.2f", trustLevel)
-
+	slog.Info("[STEP 4/6] VERIFY complete: trust_level", "trust_level", trustLevel)
 	return verifyMsg, nil
 }
 
@@ -352,7 +382,7 @@ func (hs *HandshakeSession) PerformVerification(ctx context.Context, proof *Hand
 // ============================================================================
 
 // ExchangeAttestation creates and exchanges trust attestation
-func (hs *HandshakeSession) ExchangeAttestation(ctx context.Context, verify *HandshakeVerifyMessage) (*HandshakeAttestationMessage, error) {
+func (hs *HandshakeSession) ExchangeAttestation(ctx context.Context, verify *pb.HandshakeVerify) (*pb.HandshakeAttestation, error) {
 	// Transition state
 	if err := hs.stateMachine.Transition(StateVerified, StateAttestationSent); err != nil {
 		return nil, err
@@ -369,12 +399,12 @@ func (hs *HandshakeSession) ExchangeAttestation(ctx context.Context, verify *Han
 	attestationData := fmt.Sprintf("%s:%s:%.2f:%.2f", hs.localOCX.InstanceID, hs.remoteOCX.InstanceID, verify.TrustLevel, trustTax)
 	attestationSig := HashAttestation([]byte(attestationData))
 
-	attestationMsg := &HandshakeAttestationMessage{
+	attestationMsg := &pb.HandshakeAttestation{
 		TrustLevel:           verify.TrustLevel,
 		TrustTax:             trustTax,
 		ExpiresAt:            time.Now().Add(24 * time.Hour).Unix(),
-		AttestationID:        attestationID,
-		LedgerTxID:           "", // Would be set by ledger
+		AttestationId:        attestationID,
+		LedgerTxId:           "", // Would be set by ledger
 		AttestationSignature: attestationSig,
 		Metadata: map[string]string{
 			"session_id": hs.sessionID,
@@ -382,13 +412,12 @@ func (hs *HandshakeSession) ExchangeAttestation(ctx context.Context, verify *Han
 		},
 	}
 
-	log.Printf("📜 [STEP 5/6] ATTESTATION exchanged: trust_tax=%.2f%%", trustTax*100)
-
+	slog.Info("[STEP 5/6] ATTESTATION exchanged: trust_tax=%%", "trust_tax100", trustTax*100)
 	return attestationMsg, nil
 }
 
 // ReceiveAttestation processes an incoming ATTESTATION message
-func (hs *HandshakeSession) ReceiveAttestation(ctx context.Context, attestation *HandshakeAttestationMessage) error {
+func (hs *HandshakeSession) ReceiveAttestation(ctx context.Context, attestation *pb.HandshakeAttestation) error {
 	// Transition state
 	if err := hs.stateMachine.Transition(StateAttestationSent, StateAttestationReceived); err != nil {
 		return err
@@ -397,8 +426,7 @@ func (hs *HandshakeSession) ReceiveAttestation(ctx context.Context, attestation 
 	hs.trustLevel = attestation.TrustLevel
 	hs.trustTax = attestation.TrustTax
 
-	log.Printf("✅ [STEP 5/6] ATTESTATION received")
-
+	slog.Info("✅ [STEP 5/6] ATTESTATION received")
 	return nil
 }
 
@@ -407,7 +435,7 @@ func (hs *HandshakeSession) ReceiveAttestation(ctx context.Context, attestation 
 // ============================================================================
 
 // FinalizeHandshake makes the final accept/reject decision
-func (hs *HandshakeSession) FinalizeHandshake(ctx context.Context, attestation *HandshakeAttestationMessage) (*HandshakeResultMessage, error) {
+func (hs *HandshakeSession) FinalizeHandshake(ctx context.Context, attestation *pb.HandshakeAttestation) (*pb.HandshakeResult, error) {
 	// Minimum trust threshold
 	minTrustLevel := 0.5
 
@@ -432,22 +460,21 @@ func (hs *HandshakeSession) FinalizeHandshake(ctx context.Context, attestation *
 
 	hs.verdict = verdict
 
-	resultMsg := &HandshakeResultMessage{
+	resultMsg := &pb.HandshakeResult{
 		Verdict:          verdict,
 		Reason:           reason,
 		TrustLevel:       attestation.TrustLevel,
-		SessionID:        hs.sessionID,
+		SessionId:        hs.sessionID,
 		CompletedAt:      time.Now().Unix(),
 		SessionExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
 		DurationMs:       hs.stateMachine.GetElapsedTime().Milliseconds(),
 		Metadata: map[string]string{
 			"trust_tax":      fmt.Sprintf("%.2f", attestation.TrustTax),
-			"attestation_id": attestation.AttestationID,
+			"attestation_id": attestation.AttestationId,
 		},
 	}
 
-	log.Printf("🎯 [STEP 6/6] HANDSHAKE %s: %s (duration=%dms)", verdict, reason, resultMsg.DurationMs)
-
+	slog.Info("[STEP 6/6] HANDSHAKE : (duration=ms)", "verdict", verdict, "reason", reason, "duration_ms", resultMsg.DurationMs)
 	return resultMsg, nil
 }
 
@@ -456,7 +483,7 @@ func (hs *HandshakeSession) FinalizeHandshake(ctx context.Context, attestation *
 // ============================================================================
 
 // calculateWeightedTrust implements the weighted trust formula
-func (hs *HandshakeSession) calculateWeightedTrust(attestation *TrustAttestation, proof *HandshakeProofMessage) float64 {
+func (hs *HandshakeSession) calculateWeightedTrust(attestation *TrustAttestation, proof *pb.HandshakeProof) float64 {
 	// Audit score (40%): Based on audit hash verification
 	auditScore := 1.0 // Assuming verification passed
 
@@ -540,77 +567,4 @@ func hasCapabilities(have, required []string) bool {
 	}
 
 	return true
-}
-
-// ============================================================================
-// MESSAGE TYPES (until protobuf is compiled)
-// ============================================================================
-
-type HandshakeHelloMessage struct {
-	InstanceID      string
-	Organization    string
-	ProtocolVersion string
-	Capabilities    []string
-	SPIFFEID        string
-	PublicKey       string
-	Timestamp       int64
-	Metadata        map[string]string
-}
-
-type HandshakeChallengeMessage struct {
-	Nonce                string
-	Challenge            []byte
-	ChallengeType        string
-	Timestamp            int64
-	Difficulty           int32
-	RequiredCapabilities []string
-}
-
-type HandshakeProofMessage struct {
-	Proof            []byte
-	AuditHash        []byte
-	Signature        []byte
-	CertificateChain []string
-	Timestamp        int64
-	ProofType        string
-}
-
-type VerificationDetails struct {
-	AuditHashMatch   bool
-	SignatureValid   bool
-	CertificateValid bool
-	NonceFresh       bool
-	AuditScore       float64
-	ReputationScore  float64
-	AttestationScore float64
-	HistoryScore     float64
-}
-
-type HandshakeVerifyMessage struct {
-	Verified   bool
-	TrustLevel float64
-	VerifiedAt int64
-	Details    *VerificationDetails
-	Warnings   []string
-}
-
-type HandshakeAttestationMessage struct {
-	TrustLevel           float64
-	TrustTax             float64
-	ExpiresAt            int64
-	AttestationID        string
-	LedgerTxID           string
-	AttestationSignature []byte
-	Metadata             map[string]string
-}
-
-type HandshakeResultMessage struct {
-	Verdict          string
-	Reason           string
-	TrustLevel       float64
-	SessionID        string
-	CompletedAt      int64
-	SessionExpiresAt int64
-	DurationMs       int64
-	Metadata         map[string]string
 }

@@ -9,7 +9,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -81,8 +81,7 @@ func NewIdentityMapper() (*IdentityMapper, error) {
 
 // loadeBPF loads the eBPF program
 func (im *IdentityMapper) loadeBPF() error {
-	log.Println("📡 Loading PID-to-Identity eBPF program...")
-
+	slog.Info("Loading PID-to-Identity eBPF program...")
 	// In production, use bpf2go generated code
 	// spec, err := ebpf.LoadCollectionSpec("identity_map.bpf.o")
 	// if err != nil {
@@ -97,8 +96,7 @@ func (im *IdentityMapper) loadeBPF() error {
 
 // attachHooks attaches eBPF hooks
 func (im *IdentityMapper) attachHooks() error {
-	log.Println("🔗 Attaching identity hooks...")
-
+	slog.Info("Attaching identity hooks...")
 	// Attach to sched_process_fork
 	// tp, err := link.Tracepoint("sched", "sched_process_fork", im.objs.TraceFork, nil)
 	// if err != nil {
@@ -149,7 +147,7 @@ func (im *IdentityMapper) RegisterAgent(pid uint32, agentID, tenantID string, tr
 		return err
 	}
 
-	log.Printf("✅ Registered agent: PID=%d, Tenant=%s, AgentID=%s, Trust=%.2f", pid, tenantID, agentID, trustScore)
+	slog.Info("Registered agent: PID=, Tenant=, AgentID=, Trust", "pid", pid, "tenant_i_d", tenantID, "agent_i_d", agentID, "trust_score", trustScore)
 	return nil
 }
 
@@ -197,7 +195,7 @@ func (im *IdentityMapper) VerifyIdentity(pid uint32, claimedAgentID string) (boo
 
 	// Verify claimed identity matches
 	if identity.AgentID != claimedAgentID {
-		log.Printf("⚠️  Identity mismatch: PID=%d claimed=%s actual=%s", pid, claimedAgentID, identity.AgentID)
+		slog.Info("Identity mismatch: PID= claimed= actual", "pid", pid, "claimed_agent_i_d", claimedAgentID, "agent_i_d", identity.AgentID)
 		return false, nil
 	}
 
@@ -246,7 +244,7 @@ func (im *IdentityMapper) UnregisterAgent(pid uint32) error {
 	// Delete from eBPF map
 	// return im.objs.PidIdentityMap.Delete(pid)
 
-	log.Printf("🗑️  Unregistered agent: PID=%d", pid)
+	slog.Info("Unregistered agent: PID", "pid", pid)
 	return nil
 }
 
@@ -289,17 +287,15 @@ func (im *IdentityMapper) handleEvent(event *IdentityEvent) {
 
 	switch event.EventType {
 	case 0: // fork
-		log.Printf("👶 Fork: PID=%d inherited identity from parent=%d (Agent=%s)", event.PID, event.ParentPID, agentID)
-
+		slog.Info("Fork: PID= inherited identity from parent= (Agent=)", "p_i_d", event.PID, "parent_p_i_d", event.ParentPID, "agent_i_d", agentID)
 	case 1: // exec
-		log.Printf("🔄 Exec: PID=%d maintained identity (Agent=%s)", event.PID, agentID)
-
+		slog.Info("Exec: PID= maintained identity (Agent=)", "p_i_d", event.PID, "agent_i_d", agentID)
 	case 2: // exit
-		log.Printf("💀 Exit: PID=%d (Agent=%s)", event.PID, agentID)
+		slog.Info("Exit: PID= (Agent=)", "p_i_d", event.PID, "agent_i_d", agentID)
 		im.UnregisterAgent(event.PID)
 
 	case 3: // lookup
-		log.Printf("🔍 Lookup: PID=%d (Agent=%s)", event.PID, agentID)
+		slog.Info("Lookup: PID= (Agent=)", "p_i_d", event.PID, "agent_i_d", agentID)
 	}
 }
 

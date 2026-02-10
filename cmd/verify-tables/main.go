@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -19,7 +20,7 @@ type VerificationResult struct {
 
 func main() {
 	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found")
+		slog.Info("No .env file found")
 	}
 
 	fmt.Println("╔══════════════════════════════════════════════════════════════╗")

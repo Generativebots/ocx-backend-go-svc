@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -107,7 +108,11 @@ func (e *EvidenceRecord) ComputeHash() string {
 	copy.Hash = ""
 	copy.Signature = nil
 
-	data, _ := json.Marshal(copy)
+	data, err := json.Marshal(copy)
+	if err != nil {
+		slog.Warn("EvidenceRecord.ComputeHash: marshal failed", "error", err)
+		return ""
+	}
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])
 }
@@ -575,8 +580,11 @@ func (ev *EvidenceVault) GenerateComplianceReport(
 	}
 
 	// Validate chain integrity
-	valid, _ := chain.Validate()
+	valid, failIndex := chain.Validate()
 	report.ChainValid = valid
+	if !valid {
+		slog.Warn("Chain validation failed at index for tenant", "fail_index", failIndex, "tenant_i_d", tenantID)
+	}
 
 	// Aggregate statistics
 	chain.mu.RLock()

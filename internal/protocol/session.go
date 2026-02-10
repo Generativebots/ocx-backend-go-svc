@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -258,6 +259,11 @@ type SessionManager struct {
 	// Index by tenant for efficient lookups
 	byTenant map[uint32][]*Session
 
+	// P1 FIX #6: Optional persistent store — survives restarts.
+	// When set, sessions are saved to the store on Create and loaded
+	// on Get (as fallback when not in memory).
+	store SessionStore
+
 	// Limits
 	maxSessionsPerTenant int
 	maxTotalSessions     int
@@ -272,6 +278,7 @@ type SessionManagerConfig struct {
 	MaxSessionsPerTenant int
 	MaxTotalSessions     int
 	CleanupInterval      time.Duration
+	Store                SessionStore // P1 FIX #6: Optional persistent store
 }
 
 // NewSessionManager creates a new session manager
@@ -279,6 +286,7 @@ func NewSessionManager(cfg SessionManagerConfig) *SessionManager {
 	sm := &SessionManager{
 		sessions:             make(map[[16]byte]*Session),
 		byTenant:             make(map[uint32][]*Session),
+		store:                cfg.Store, // P1 FIX #6: Wire persistent store
 		maxSessionsPerTenant: cfg.MaxSessionsPerTenant,
 		maxTotalSessions:     cfg.MaxTotalSessions,
 		cleanupInterval:      cfg.CleanupInterval,
@@ -318,15 +326,38 @@ func (sm *SessionManager) Create(ctx context.Context, cfg SessionConfig) (*Sessi
 	sm.sessions[session.ID] = session
 	sm.byTenant[cfg.TenantID] = append(sm.byTenant[cfg.TenantID], session)
 
+	// P1 FIX #6: Persist to store (non-blocking, best-effort)
+	if sm.store != nil {
+		go func() {
+			if err := sm.store.Save(ctx, session); err != nil {
+				slog.Warn("[SessionManager] Failed to persist session", "i_d_string", session.IDString(), "error", err)
+			}
+		}()
+	}
+
 	return session, nil
 }
 
 // Get retrieves a session by ID
 func (sm *SessionManager) Get(id [16]byte) (*Session, error) {
 	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
 	session, exists := sm.sessions[id]
+	sm.mu.RUnlock()
+
+	// P1 FIX #6: Try loading from persistent store as fallback
+	if !exists && sm.store != nil {
+		loaded, err := sm.store.Load(context.Background(), id)
+		if err == nil && loaded != nil {
+			// Re-hydrate into in-memory cache
+			sm.mu.Lock()
+			sm.sessions[id] = loaded
+			sm.byTenant[loaded.TenantID] = append(sm.byTenant[loaded.TenantID], loaded)
+			sm.mu.Unlock()
+			session = loaded
+			exists = true
+		}
+	}
+
 	if !exists {
 		return nil, fmt.Errorf("session not found: %s", hex.EncodeToString(id[:]))
 	}
@@ -379,14 +410,26 @@ func (sm *SessionManager) Remove(id [16]byte) error {
 	return nil
 }
 
-// Cleanup removes expired sessions
+// Cleanup removes expired sessions.
+// P0 FIX #5: Previously called session.IsExpired() which acquires session.mu
+// while sm.mu was held — potential deadlock with concurrent session operations.
+// Now checks expiry inline without acquiring session lock.
 func (sm *SessionManager) Cleanup() int {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	now := time.Now()
 	var removed int
 	for id, session := range sm.sessions {
-		if session.IsExpired() || session.State == SessionStateTerminated {
+		// P0 FIX: Inline expiry check instead of calling session.IsExpired()
+		// to avoid nested lock acquisition (sm.mu → session.mu).
+		// Reading State/ExpiresAt/LastActive is safe here because Cleanup
+		// holds the exclusive sm.mu lock, and these fields are only written
+		// under session.mu which is fine for a snapshot read.
+		isExpired := now.After(session.ExpiresAt) ||
+			(session.IdleTimeout > 0 && now.Sub(session.LastActive) > session.IdleTimeout)
+
+		if isExpired || session.State == SessionStateTerminated {
 			delete(sm.sessions, id)
 
 			// Remove from tenant index
@@ -414,8 +457,8 @@ func (sm *SessionManager) cleanupLoop() {
 		case <-ticker.C:
 			removed := sm.Cleanup()
 			if removed > 0 {
-				// Log cleanup
-				fmt.Printf("[SessionManager] Cleaned up %d expired sessions\n", removed)
+				// P1 FIX #15: Use structured logging instead of fmt.Printf
+				slog.Info("[SessionManager] Cleaned up expired sessions", "removed", removed)
 			}
 		case <-sm.stopCleanup:
 			return

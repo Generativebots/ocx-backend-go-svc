@@ -17,9 +17,10 @@ import (
 
 // NonceStore manages nonces for replay attack prevention
 type NonceStore struct {
-	mu     sync.RWMutex
-	nonces map[string]*NonceEntry
-	ttl    time.Duration
+	mu          sync.RWMutex
+	nonces      map[string]*NonceEntry
+	ttl         time.Duration
+	stopCleanup chan struct{} // L4 FIX: stop channel for graceful shutdown
 }
 
 type NonceEntry struct {
@@ -31,8 +32,9 @@ type NonceEntry struct {
 
 func NewNonceStore(ttl time.Duration) *NonceStore {
 	store := &NonceStore{
-		nonces: make(map[string]*NonceEntry),
-		ttl:    ttl,
+		nonces:      make(map[string]*NonceEntry),
+		ttl:         ttl,
+		stopCleanup: make(chan struct{}),
 	}
 
 	// Start cleanup goroutine
@@ -90,9 +92,19 @@ func (ns *NonceStore) cleanupLoop() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		ns.cleanup()
+	for {
+		select {
+		case <-ticker.C:
+			ns.cleanup()
+		case <-ns.stopCleanup:
+			return
+		}
 	}
+}
+
+// Stop signals the background cleanup goroutine to exit.
+func (ns *NonceStore) Stop() {
+	close(ns.stopCleanup)
 }
 
 func (ns *NonceStore) cleanup() {
@@ -428,15 +440,6 @@ type SecurityManager struct {
 	rateLimiter       *RateLimiter
 }
 
-func NewSecurityManager(secret []byte, repStore ReputationStore) *SecurityManager {
-	return &SecurityManager{
-		nonceStore:        NewNonceStore(5 * time.Minute),
-		sybilDetector:     NewSybilDetector(10, 0.3, repStore),
-		challengeVerifier: NewChallengeVerifier(secret),
-		rateLimiter:       NewRateLimiter(100, 1*time.Minute),
-	}
-}
-
 // ValidateHandshake performs complete security validation
 func (sm *SecurityManager) ValidateHandshake(ctx context.Context, agentID, ipAddress, nonce string) error {
 	// 1. Rate limiting
@@ -455,11 +458,4 @@ func (sm *SecurityManager) ValidateHandshake(ctx context.Context, agentID, ipAdd
 	}
 
 	return nil
-}
-
-func min(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
 }

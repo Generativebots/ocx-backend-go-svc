@@ -2,8 +2,9 @@ package plan
 
 import (
 	"context"
-	"github.com/ocx/backend/pb"
 	"sync"
+
+	"github.com/ocx/backend/pb"
 )
 
 type PlanManager struct {
@@ -18,13 +19,6 @@ type PlanManager struct {
 
 	// Legacy support for PID based lookup if needed for existing main.go logic
 	pidPlans map[uint32]*pb.ExecutionPlan
-}
-
-func NewPlanManager() *PlanManager {
-	return &PlanManager{
-		activePlans: make(map[string]*pb.ExecutionPlan),
-		pidPlans:    make(map[uint32]*pb.ExecutionPlan),
-	}
 }
 
 // RegisterIntent is called by the Python Orchestrator (The Brain)

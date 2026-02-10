@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -108,7 +108,7 @@ func (ic *IdentityCache) evictLRU() {
 
 	if oldestPID != 0 {
 		delete(ic.entries, oldestPID)
-		log.Printf("LRU evicted PID %d", oldestPID)
+		slog.Info("LRU evicted PID", "oldest_p_i_d", oldestPID)
 	}
 }
 
@@ -136,7 +136,7 @@ func (ic *IdentityCache) cleanup() {
 	}
 
 	if expired > 0 {
-		log.Printf("TTL cleanup: removed %d expired entries", expired)
+		slog.Info("TTL cleanup: removed expired entries", "expired", expired)
 	}
 }
 
@@ -201,9 +201,7 @@ func (ve *VerdictEnforcer) EnforceVerdict(pid uint32, tenantID string, action ui
 		}
 	}()
 
-	log.Printf("ENFORCED: PID %d | Tenant: %s | Action: %s | Trust: %.2f | Reason: %s",
-		pid, tenantID, actionStr, trustLevel, reasoning)
-
+	slog.Info("ENFORCED: PID | Tenant: | Action: | Trust: | Reason", "pid", pid, "tenant_i_d", tenantID, "action_str", actionStr, "trust_level", trustLevel, "reasoning", reasoning)
 	return nil
 }
 
@@ -219,8 +217,7 @@ func (ve *VerdictEnforcer) CleanupPID(pid uint32) error {
 	// Delete from userspace cache
 	ve.cache.Delete(pid)
 
-	log.Printf("CLEANUP: PID %d removed from all caches", pid)
-
+	slog.Info("CLEANUP: PID removed from all caches", "pid", pid)
 	return nil
 }
 
@@ -291,14 +288,13 @@ func (wg *WorkerGroup) Start() error {
 			case <-ticker.C:
 				count := atomic.LoadUint64(&wg.dropped)
 				if count > 0 {
-					log.Printf("⚠️  Backpressure Drop Count: %d events dropped (Jury slow)", count)
+					slog.Info("Backpressure Drop Count: events dropped (Jury slow)", "count", count)
 				}
 			}
 		}
 	}()
 
-	log.Println("WorkerGroup started (10 workers)")
-
+	slog.Info("WorkerGroup started (10 workers)")
 	return nil
 }
 
@@ -316,7 +312,7 @@ func (wg *WorkerGroup) worker(id int) {
 			}
 
 			if err := wg.stream.Send(req); err != nil {
-				log.Printf("Worker %d: Failed to send event: %v", id, err)
+				slog.Warn("Worker : Failed to send event", "id", id, "error", err)
 			}
 
 			// Return event to pool for reuse
@@ -348,7 +344,7 @@ func (wg *WorkerGroup) listenForVerdicts() {
 		// Receive verdict from Jury
 		res, err := wg.stream.Recv()
 		if err != nil {
-			log.Printf("Stream recv error: %v", err)
+			slog.Warn("Stream recv error", "error", err)
 			time.Sleep(1 * time.Second)
 			continue
 		}
@@ -380,7 +376,7 @@ func (wg *WorkerGroup) listenForVerdicts() {
 		)
 
 		if err != nil {
-			log.Printf("Failed to enforce verdict: %v", err)
+			slog.Warn("Failed to enforce verdict", "error", err)
 		}
 	}
 }
@@ -390,7 +386,7 @@ func (wg *WorkerGroup) Stop() {
 	if wg.stream != nil {
 		wg.stream.CloseSend()
 	}
-	log.Println("WorkerGroup stopped")
+	slog.Info("WorkerGroup stopped")
 }
 
 // ============================================================================
@@ -504,14 +500,13 @@ func LoadOCXInterceptor(juryClient TrafficAssessorClient) (*OCXInterceptor, erro
 	// Start event processing
 	go interceptor.processEvents()
 
-	log.Println("✅ OCX Interceptor loaded with LSM active blocking")
-
+	slog.Info("OCX Interceptor loaded with LSM active blocking")
 	return interceptor, nil
 }
 
 func (oi *OCXInterceptor) processEvents() {
 	if oi.reader == nil {
-		log.Println("eBPF ring buffer not loaded, skipping event processing")
+		slog.Info("eBPF ring buffer not loaded, skipping event processing")
 		return
 	}
 
@@ -521,14 +516,14 @@ func (oi *OCXInterceptor) processEvents() {
 			if err == ringbuf.ErrClosed {
 				return
 			}
-			log.Printf("Reading from ringbuf: %v", err)
+			slog.Info("Reading from ringbuf", "error", err)
 			continue
 		}
 
 		// Parse raw event
 		var ringEv RingEvent
 		if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, &ringEv); err != nil {
-			log.Printf("Failed to parse ring event: %v", err)
+			slog.Warn("Failed to parse ring event", "error", err)
 			continue
 		}
 
@@ -578,8 +573,7 @@ func (oi *OCXInterceptor) Close() error {
 	// 	oi.objs.Close()
 	// }
 
-	log.Println("OCX Interceptor closed")
-
+	slog.Info("OCX Interceptor closed")
 	return nil
 }
 
@@ -660,8 +654,7 @@ const (
 )
 
 func main() {
-	log.Println("🚀 Starting OCX Interceptor (Standalone Mode)...")
-
+	slog.Info("Starting OCX Interceptor (Standalone Mode)...")
 	// Mock Jury Client for standalone mode
 	// In production, this connects to the real Jury Service via gRPC
 	// We pass nil which will cause workers start to fail/panic if not handled,
@@ -671,7 +664,7 @@ func main() {
 	// For build verification:
 	// interceptor, err := LoadOCXInterceptor(&MockJuryClient{})
 
-	log.Println("Build check passed. Standing by.")
+	slog.Info("Build check passed. Standing by.")
 	select {}
 }
 

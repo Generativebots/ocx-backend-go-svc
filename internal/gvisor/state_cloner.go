@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -41,8 +41,7 @@ func NewStateCloner(redisAddr string) *StateCloner {
 
 // CloneState creates a snapshot of current state for sandbox execution
 func (sc *StateCloner) CloneState(ctx context.Context, transactionID string, agentID string) (*StateSnapshot, error) {
-	log.Printf("📸 Creating state snapshot for transaction: %s", transactionID)
-
+	slog.Info("Creating state snapshot for transaction", "transaction_i_d", transactionID)
 	snapshotID := fmt.Sprintf("snapshot:%s:%d", transactionID, time.Now().Unix())
 
 	snapshot := &StateSnapshot{
@@ -68,8 +67,7 @@ func (sc *StateCloner) CloneState(ctx context.Context, transactionID string, age
 		return nil, fmt.Errorf("failed to store snapshot: %w", err)
 	}
 
-	log.Printf("✅ State snapshot created: %s (%d Redis keys)", snapshotID, len(snapshot.RedisKeys))
-
+	slog.Info("State snapshot created: ( Redis keys)", "snapshot_i_d", snapshotID, "redis_keys", len(snapshot.RedisKeys))
 	return snapshot, nil
 }
 
@@ -149,15 +147,13 @@ func (sc *StateCloner) RestoreSnapshot(ctx context.Context, snapshotID string) (
 		return nil, err
 	}
 
-	log.Printf("📥 Restored snapshot: %s", snapshotID)
-
+	slog.Info("Restored snapshot", "snapshot_i_d", snapshotID)
 	return &snapshot, nil
 }
 
 // RevertState discards a snapshot (called when execution is shredded)
 func (sc *StateCloner) RevertState(ctx context.Context, revertToken string) error {
-	log.Printf("⏪ Reverting state with token: %s", revertToken)
-
+	slog.Info("Reverting state with token", "revert_token", revertToken)
 	// Parse revert token to get snapshot ID
 	// Token format: <transaction-id>:<timestamp>:<hash>
 	// For now, find snapshot by transaction ID
@@ -173,7 +169,7 @@ func (sc *StateCloner) RevertState(ctx context.Context, revertToken string) erro
 		if err := sc.redisClient.Del(ctx, keys...).Err(); err != nil {
 			return err
 		}
-		log.Printf("✅ Reverted %d snapshot keys", len(keys))
+		slog.Info("Reverted snapshot keys", "count", len(keys))
 	}
 
 	return nil
@@ -181,8 +177,7 @@ func (sc *StateCloner) RevertState(ctx context.Context, revertToken string) erro
 
 // CommitState promotes a snapshot to production (called when execution is replayed)
 func (sc *StateCloner) CommitState(ctx context.Context, snapshotID string) error {
-	log.Printf("✅ Committing state from snapshot: %s", snapshotID)
-
+	slog.Info("Committing state from snapshot", "snapshot_i_d", snapshotID)
 	// Retrieve snapshot
 	snapshot, err := sc.RestoreSnapshot(ctx, snapshotID)
 	if err != nil {
@@ -201,8 +196,7 @@ func (sc *StateCloner) CommitState(ctx context.Context, snapshotID string) error
 	// 2. Update ledger
 	// 3. Notify downstream services
 
-	log.Printf("✅ Committed %d keys to production", len(snapshot.RedisKeys))
-
+	slog.Info("Committed keys to production", "redis_keys", len(snapshot.RedisKeys))
 	return nil
 }
 
@@ -230,27 +224,8 @@ func (sc *StateCloner) CleanupExpiredSnapshots(ctx context.Context) error {
 	}
 
 	if cleaned > 0 {
-		log.Printf("🧹 Cleaned up %d expired snapshots", cleaned)
+		slog.Info("Cleaned up expired snapshots", "cleaned", cleaned)
 	}
 
 	return nil
-}
-
-// Example usage
-func ExampleStateCloner() {
-	cloner := NewStateCloner("localhost:6379")
-	ctx := context.Background()
-
-	// Create snapshot
-	snapshot, err := cloner.CloneState(ctx, "tx-12345", "PROCUREMENT_BOT")
-	if err != nil {
-		log.Fatalf("Failed to clone state: %v", err)
-	}
-
-	fmt.Printf("Snapshot ID: %s\n", snapshot.SnapshotID)
-	fmt.Printf("Redis Keys: %d\n", len(snapshot.RedisKeys))
-
-	// Later: Revert or Commit
-	// cloner.RevertState(ctx, snapshot.RevertToken)
-	// cloner.CommitState(ctx, snapshot.SnapshotID)
 }

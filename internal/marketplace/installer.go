@@ -68,6 +68,15 @@ func (inst *Installer) InstallConnector(tenantID, connectorID string, config map
 		go inst.svc.revenueMgr.RecordInstallRevenue(tenantID, ItemTypeConnector, connectorID)
 	}
 
+	// Billing: Charge credits on install
+	if inst.svc.billing != nil && connector.MonthlyCredits > 0 {
+		go func() {
+			if err := inst.svc.billing.ChargeOnInstall(tenantID, ItemTypeConnector, connectorID, connector.Name, connector.MonthlyCredits); err != nil {
+				inst.svc.logger.Printf("⚠️ Billing charge failed for connector %s: %v", connectorID, err)
+			}
+		}()
+	}
+
 	inst.svc.logger.Printf("Installed connector %s for tenant %s", connector.Name, tenantID)
 	return installation, nil
 }
@@ -122,6 +131,15 @@ func (inst *Installer) InstallTemplate(tenantID, templateID string, config map[s
 	// Gap 2 fix: Record revenue for paid templates
 	if inst.svc.revenueMgr != nil && template.OneTimeCredits > 0 {
 		go inst.svc.revenueMgr.RecordInstallRevenue(tenantID, ItemTypeTemplate, templateID)
+	}
+
+	// Billing: Charge credits on install
+	if inst.svc.billing != nil && template.OneTimeCredits > 0 {
+		go func() {
+			if err := inst.svc.billing.ChargeOnInstall(tenantID, ItemTypeTemplate, templateID, template.Name, template.OneTimeCredits); err != nil {
+				inst.svc.logger.Printf("⚠️ Billing charge failed for template %s: %v", templateID, err)
+			}
+		}()
 	}
 
 	// Gap 7 fix: Deploy template as activity

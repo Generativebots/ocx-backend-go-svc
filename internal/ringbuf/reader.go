@@ -3,7 +3,7 @@ package ringbuf
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
+	"log/slog"
 
 	//"os" // Unused
 	"time"
@@ -41,11 +41,10 @@ func NewReader(gate *escrow.EscrowGate) (*Reader, error) {
 }
 
 func (r *Reader) Start() {
-	log.Println("🔌 Kernel Tap: Starting Ring Buffer Consumer...")
-
+	slog.Info("Kernel Tap: Starting Ring Buffer Consumer...")
 	// Real Reader Logic
 	if r.ring == nil {
-		log.Println("⚠️  No BPF RingBuffer attached (Mock Mode)")
+		slog.Info("No BPF RingBuffer attached (Mock Mode)")
 		return
 	}
 
@@ -53,7 +52,7 @@ func (r *Reader) Start() {
 		for {
 			record, err := r.ring.Read()
 			if err != nil {
-				log.Printf("Ringbuf Read Error: %v", err)
+				slog.Warn("Ringbuf Read Error", "error", err)
 				if err == ringbuf.ErrClosed {
 					return
 				}

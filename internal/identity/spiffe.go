@@ -10,7 +10,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
@@ -36,8 +36,7 @@ func NewSPIFFEVerifier(socketPath string) (*SPIFFEVerifier, error) {
 		return nil, fmt.Errorf("failed to connect to SPIRE: %w", err)
 	}
 
-	log.Printf("✅ Connected to SPIRE agent at %s", socketPath)
-
+	slog.Info("Connected to SPIRE agent at", "socket_path", socketPath)
 	return &SPIFFEVerifier{
 		source: source,
 		ctx:    ctx,
@@ -66,7 +65,7 @@ func (sv *SPIFFEVerifier) VerifySVID(spiffeID string) (uint64, error) {
 	// Calculate hash of SVID
 	hash := sv.calculateSVIDHash(svid.Certificates[0].Raw)
 
-	log.Printf("✅ Verified SPIFFE ID: %s (hash: %x)", spiffeID, hash)
+	slog.Info("Verified SPIFFE ID: (hash: )", "spiffe_i_d", spiffeID, "hash", hash)
 	return hash, nil
 }
 

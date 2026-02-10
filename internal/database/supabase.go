@@ -629,9 +629,21 @@ func (sc *SupabaseClient) RewardAgent(ctx context.Context, tenantID, agentID str
 	return sc.UpdateAgent(ctx, agent)
 }
 
-func min(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
+// ============================================================================
+// GENERIC HELPERS — used by evidence store and other integrations
+// ============================================================================
+
+// InsertRow inserts a single row into any table.
+func (sc *SupabaseClient) InsertRow(table string, row interface{}) error {
+	_, _, err := sc.client.From(table).Insert(row, false, "", "", "").Execute()
+	return err
+}
+
+// QueryRows queries rows from a table filtered by a single column.
+func (sc *SupabaseClient) QueryRows(table, selectCols, filterCol, filterVal string, dest interface{}) error {
+	_, err := sc.client.From(table).
+		Select(selectCols, "", false).
+		Eq(filterCol, filterVal).
+		ExecuteTo(dest)
+	return err
 }

@@ -3,9 +3,10 @@ package federation
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
+	pb "github.com/ocx/backend/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -17,7 +18,7 @@ import (
 // HandshakeClient wraps the gRPC client for handshake operations
 type HandshakeClient struct {
 	conn   *grpc.ClientConn
-	client HandshakeServiceClient
+	client pb.InterOCXHandshakeServiceClient
 
 	localAgent *OCXInstance
 	ledger     *TrustAttestationLedger
@@ -33,7 +34,7 @@ func NewHandshakeClient(serverAddr string, localAgent *OCXInstance, ledger *Trus
 
 	return &HandshakeClient{
 		conn:       conn,
-		client:     NewHandshakeServiceClient(conn),
+		client:     pb.NewInterOCXHandshakeServiceClient(conn),
 		localAgent: localAgent,
 		ledger:     ledger,
 	}, nil
@@ -45,9 +46,8 @@ func (c *HandshakeClient) Close() error {
 }
 
 // PerformFullHandshake executes the complete 6-step handshake with a remote agent
-func (c *HandshakeClient) PerformFullHandshake(ctx context.Context, remoteAgentID string, agentID string) (*HandshakeResultMessage, error) {
-	log.Printf("🚀 Starting full handshake with %s", remoteAgentID)
-
+func (c *HandshakeClient) PerformFullHandshake(ctx context.Context, remoteAgentID string, agentID string) (*pb.HandshakeResult, error) {
+	slog.Info("Starting full handshake with", "remote_agent_i_d", remoteAgentID)
 	// Create remote agent placeholder
 	remoteAgent := &OCXInstance{
 		InstanceID: remoteAgentID,
@@ -64,16 +64,14 @@ func (c *HandshakeClient) PerformFullHandshake(ctx context.Context, remoteAgentI
 		return nil, fmt.Errorf("failed to create HELLO: %w", err)
 	}
 
-	log.Printf("📤 [1/6] Sending HELLO to %s", remoteAgentID)
-
+	slog.Info("[1/6] Sending HELLO to", "remote_agent_i_d", remoteAgentID)
 	// Call remote agent
 	challenge, err := c.client.InitiateHandshake(ctx, hello)
 	if err != nil {
 		return nil, fmt.Errorf("HELLO failed: %w", err)
 	}
 
-	log.Printf("📥 [2/6] Received CHALLENGE")
-
+	slog.Info("📥 [2/6] Received CHALLENGE")
 	// ========================================================================
 	// STEP 2: Process CHALLENGE
 	// ========================================================================
@@ -89,15 +87,13 @@ func (c *HandshakeClient) PerformFullHandshake(ctx context.Context, remoteAgentI
 		return nil, fmt.Errorf("failed to generate PROOF: %w", err)
 	}
 
-	log.Printf("📤 [3/6] Sending PROOF")
-
+	slog.Info("📤 [3/6] Sending PROOF")
 	verify, err := c.client.RespondToChallenge(ctx, proof)
 	if err != nil {
 		return nil, fmt.Errorf("PROOF failed: %w", err)
 	}
 
-	log.Printf("📥 [4/6] Received VERIFY (trust_level=%.2f)", verify.TrustLevel)
-
+	slog.Info("[4/6] Received VERIFY (trust_level=)", "trust_level", verify.TrustLevel)
 	// ========================================================================
 	// STEP 4: Process VERIFY (already done by server)
 	// ========================================================================
@@ -110,32 +106,28 @@ func (c *HandshakeClient) PerformFullHandshake(ctx context.Context, remoteAgentI
 		return nil, fmt.Errorf("failed to generate ATTESTATION: %w", err)
 	}
 
-	log.Printf("📤 [5/6] Sending ATTESTATION")
-
+	slog.Info("📤 [5/6] Sending ATTESTATION")
 	result, err := c.client.ExchangeAttestation(ctx, attestation)
 	if err != nil {
 		return nil, fmt.Errorf("ATTESTATION failed: %w", err)
 	}
 
-	log.Printf("📥 [6/6] Received RESULT: %s", result.Verdict)
-
+	slog.Info("[6/6] Received RESULT", "verdict", result.Verdict)
 	// ========================================================================
 	// STEP 6: Process RESULT
 	// ========================================================================
 	if result.Verdict == "ACCEPTED" {
-		log.Printf("✅ Handshake ACCEPTED: trust_level=%.2f, session=%s (duration=%dms)",
-			result.TrustLevel, result.SessionID, result.DurationMs)
+		slog.Info("Handshake ACCEPTED: trust_level=, session= (duration=ms)", "trust_level", result.TrustLevel, "session_id", result.SessionId, "duration_ms", result.DurationMs)
 	} else {
-		log.Printf("❌ Handshake REJECTED: %s", result.Reason)
+		slog.Info("Handshake REJECTED", "reason", result.Reason)
 	}
 
 	return result, nil
 }
 
 // PerformStreamingHandshake uses bidirectional streaming for the handshake
-func (c *HandshakeClient) PerformStreamingHandshake(ctx context.Context, remoteAgentID string, agentID string) (*HandshakeResultMessage, error) {
-	log.Printf("🔄 Starting streaming handshake with %s", remoteAgentID)
-
+func (c *HandshakeClient) PerformStreamingHandshake(ctx context.Context, remoteAgentID string, agentID string) (*pb.HandshakeResult, error) {
+	slog.Info("Starting streaming handshake with", "remote_agent_i_d", remoteAgentID)
 	// Create stream
 	stream, err := c.client.PerformHandshake(ctx)
 	if err != nil {
@@ -152,8 +144,8 @@ func (c *HandshakeClient) PerformStreamingHandshake(ctx context.Context, remoteA
 		return nil, err
 	}
 
-	if err := stream.Send(&HandshakeMessageWrapper{
-		Message: &HandshakeMessageWrapper_Hello{Hello: hello},
+	if err := stream.Send(&pb.HandshakeMessage{
+		Message: &pb.HandshakeMessage_Hello{Hello: hello},
 	}); err != nil {
 		return nil, err
 	}
@@ -163,7 +155,7 @@ func (c *HandshakeClient) PerformStreamingHandshake(ctx context.Context, remoteA
 	if err != nil {
 		return nil, err
 	}
-	challengeMsg, ok := msg.Message.(*HandshakeMessageWrapper_Challenge)
+	challengeMsg, ok := msg.Message.(*pb.HandshakeMessage_Challenge)
 	if !ok {
 		return nil, fmt.Errorf("expected CHALLENGE, got %T", msg.Message)
 	}
@@ -178,8 +170,8 @@ func (c *HandshakeClient) PerformStreamingHandshake(ctx context.Context, remoteA
 		return nil, err
 	}
 
-	if err := stream.Send(&HandshakeMessageWrapper{
-		Message: &HandshakeMessageWrapper_Proof{Proof: proof},
+	if err := stream.Send(&pb.HandshakeMessage{
+		Message: &pb.HandshakeMessage_Proof{Proof: proof},
 	}); err != nil {
 		return nil, err
 	}
@@ -189,7 +181,7 @@ func (c *HandshakeClient) PerformStreamingHandshake(ctx context.Context, remoteA
 	if err != nil {
 		return nil, err
 	}
-	verifyMsg, ok := msg.Message.(*HandshakeMessageWrapper_Verify)
+	verifyMsg, ok := msg.Message.(*pb.HandshakeMessage_Verify)
 	if !ok {
 		return nil, fmt.Errorf("expected VERIFY, got %T", msg.Message)
 	}
@@ -200,8 +192,8 @@ func (c *HandshakeClient) PerformStreamingHandshake(ctx context.Context, remoteA
 		return nil, err
 	}
 
-	if err := stream.Send(&HandshakeMessageWrapper{
-		Message: &HandshakeMessageWrapper_Attestation{Attestation: attestation},
+	if err := stream.Send(&pb.HandshakeMessage{
+		Message: &pb.HandshakeMessage_Attestation{Attestation: attestation},
 	}); err != nil {
 		return nil, err
 	}
@@ -211,19 +203,18 @@ func (c *HandshakeClient) PerformStreamingHandshake(ctx context.Context, remoteA
 	if err != nil {
 		return nil, err
 	}
-	resultMsg, ok := msg.Message.(*HandshakeMessageWrapper_Result)
+	resultMsg, ok := msg.Message.(*pb.HandshakeMessage_Result)
 	if !ok {
 		return nil, fmt.Errorf("expected RESULT, got %T", msg.Message)
 	}
 
-	log.Printf("✅ Streaming handshake complete: %s", resultMsg.Result.Verdict)
-
+	slog.Info("Streaming handshake complete", "verdict", resultMsg.Result.Verdict)
 	return resultMsg.Result, nil
 }
 
 // GetSessionStatus queries the status of a handshake session
-func (c *HandshakeClient) GetSessionStatus(ctx context.Context, sessionID string) (*HandshakeStateMessage, error) {
-	req := &HandshakeStatusRequest{
+func (c *HandshakeClient) GetSessionStatus(ctx context.Context, sessionID string) (*pb.HandshakeState, error) {
+	req := &pb.HandshakeStatusRequest{
 		SessionId: sessionID,
 	}
 
@@ -240,7 +231,7 @@ func (c *HandshakeClient) GetSessionStatus(ctx context.Context, sessionID string
 // ============================================================================
 
 // QuickHandshake performs a handshake with default settings
-func QuickHandshake(localAgent *OCXInstance, remoteAddr string, remoteAgentID string) (*HandshakeResultMessage, error) {
+func QuickHandshake(localAgent *OCXInstance, remoteAddr string, remoteAgentID string) (*pb.HandshakeResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
@@ -251,27 +242,4 @@ func QuickHandshake(localAgent *OCXInstance, remoteAddr string, remoteAgentID st
 	defer client.Close()
 
 	return client.PerformFullHandshake(ctx, remoteAgentID, "default-agent")
-}
-
-// ============================================================================
-// PLACEHOLDER TYPES (until protobuf is compiled)
-// ============================================================================
-
-type HandshakeServiceClient interface {
-	InitiateHandshake(ctx context.Context, in *HandshakeHelloMessage, opts ...grpc.CallOption) (*HandshakeChallengeMessage, error)
-	RespondToChallenge(ctx context.Context, in *HandshakeProofMessage, opts ...grpc.CallOption) (*HandshakeVerifyMessage, error)
-	ExchangeAttestation(ctx context.Context, in *HandshakeAttestationMessage, opts ...grpc.CallOption) (*HandshakeResultMessage, error)
-	PerformHandshake(ctx context.Context, opts ...grpc.CallOption) (HandshakeService_PerformHandshakeClient, error)
-	GetHandshakeStatus(ctx context.Context, in *HandshakeStatusRequest, opts ...grpc.CallOption) (*HandshakeStateMessage, error)
-}
-
-type HandshakeService_PerformHandshakeClient interface {
-	Send(*HandshakeMessageWrapper) error
-	Recv() (*HandshakeMessageWrapper, error)
-	grpc.ClientStream
-}
-
-func NewHandshakeServiceClient(conn *grpc.ClientConn) HandshakeServiceClient {
-	// This will be generated by protoc
-	return nil
 }

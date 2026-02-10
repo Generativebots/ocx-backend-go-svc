@@ -1,8 +1,10 @@
 package config
 
 import (
+	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v2"
@@ -26,12 +28,24 @@ type Config struct {
 	Simulation SimulationConfig `yaml:"simulation"`
 	Impact     ImpactConfig     `yaml:"impact"`
 	Services   ServicesConfig   `yaml:"services"`
+	Federation FederationConfig `yaml:"federation"`
+	Webhook    WebhookConfig    `yaml:"webhook"`
+	Evidence   EvidenceConfig   `yaml:"evidence"`
+	PubSub     PubSubConfig     `yaml:"pubsub"`
+	CloudTasks CloudTasksConfig `yaml:"cloud_tasks"`
+	Security   SecurityConfig   `yaml:"security"`
+	Sovereign  SovereignConfig  `yaml:"sovereign"`
 }
 
 type ServerConfig struct {
-	Port      string `yaml:"port"`
-	Env       string `yaml:"env"`
-	Interface string `yaml:"interface"`
+	Port             string   `yaml:"port"`
+	Env              string   `yaml:"env"`
+	Interface        string   `yaml:"interface"`
+	ReadTimeoutSec   int      `yaml:"read_timeout_sec"`
+	WriteTimeoutSec  int      `yaml:"write_timeout_sec"`
+	IdleTimeoutSec   int      `yaml:"idle_timeout_sec"`
+	ShutdownTimeout  int      `yaml:"shutdown_timeout_sec"`
+	CORSAllowOrigins []string `yaml:"cors_allow_origins"`
 }
 
 // DatabaseConfig for Supabase
@@ -63,6 +77,9 @@ type EscrowConfig struct {
 	EntropyThreshold  float64 `yaml:"entropy_threshold"`
 	EnableLiveCapture bool    `yaml:"enable_live_capture"`
 	JuryServiceAddr   string  `yaml:"jury_service_addr"`
+	DefaultTrustScore float64 `yaml:"default_trust_score"`
+	FailureTaxRate    float64 `yaml:"failure_tax_rate"`
+	JITEntitlementTTL int     `yaml:"jit_entitlement_ttl_sec"`
 }
 
 type TrustConfig struct {
@@ -120,6 +137,58 @@ type ImpactConfig struct {
 	MonteCarloIterations int `yaml:"monte_carlo_iterations"`
 }
 
+// FederationConfig for inter-OCX federation identity
+type FederationConfig struct {
+	InstanceID   string `yaml:"instance_id"`
+	TrustDomain  string `yaml:"trust_domain"`
+	Region       string `yaml:"region"`
+	Organization string `yaml:"organization"`
+}
+
+// WebhookConfig for webhook dispatcher
+type WebhookConfig struct {
+	WorkerCount int `yaml:"worker_count"`
+}
+
+// EvidenceConfig for evidence vault
+type EvidenceConfig struct {
+	RetentionDays int `yaml:"retention_days"`
+}
+
+// PubSubConfig for Google Cloud Pub/Sub event bus
+type PubSubConfig struct {
+	ProjectID string `yaml:"project_id"`
+	TopicID   string `yaml:"topic_id"`
+	Enabled   bool   `yaml:"enabled"`
+}
+
+// CloudTasksConfig for webhook delivery via Google Cloud Tasks
+type CloudTasksConfig struct {
+	ProjectID  string `yaml:"project_id"`
+	LocationID string `yaml:"location_id"`
+	QueueID    string `yaml:"queue_id"`
+	Enabled    bool   `yaml:"enabled"`
+}
+
+// SecurityConfig for Token Broker and Continuous Access Evaluation (Claims 7+8)
+type SecurityConfig struct {
+	HMACSecret          string  `yaml:"hmac_secret"`
+	TokenTTLSec         int     `yaml:"token_ttl_sec"`
+	MinTrustForToken    float64 `yaml:"min_trust_for_token"`
+	MaxTokensPerAgent   int     `yaml:"max_tokens_per_agent"`
+	CAESweepIntervalSec int     `yaml:"cae_sweep_interval_sec"`
+	DriftThreshold      float64 `yaml:"drift_threshold"`
+	TrustDropLimit      float64 `yaml:"trust_drop_limit"`
+	AnomalyThreshold    int     `yaml:"anomaly_threshold"`
+}
+
+// SovereignConfig for Sovereign Mode (Claim 12)
+type SovereignConfig struct {
+	Enabled                bool   `yaml:"enabled"`
+	LocalInferenceEndpoint string `yaml:"local_inference_endpoint"`
+	BoundaryEnforced       bool   `yaml:"boundary_enforced"`
+}
+
 // ServicesConfig contains URLs for Python services
 type ServicesConfig struct {
 	TrustRegistryURL    string `yaml:"trust_registry_url"`
@@ -142,7 +211,10 @@ var (
 // Get returns the singleton config instance
 func Get() *Config {
 	once.Do(func() {
-		cfg, _ := LoadConfig(getEnv("CONFIG_PATH", "config.yaml"))
+		cfg, err := LoadConfig(getEnv("CONFIG_PATH", "config.yaml"))
+		if err != nil {
+			slog.Warn("Config: failed to load config file: (using defaults)", "error", err)
+		}
 		if cfg == nil {
 			cfg = &Config{}
 		}
@@ -206,6 +278,157 @@ func (c *Config) applyEnvOverrides() {
 	c.Services.EvidenceVaultURL = getEnv("EVIDENCE_VAULT_URL", c.Services.EvidenceVaultURL)
 	c.Services.AuthorityURL = getEnv("AUTHORITY_URL", c.Services.AuthorityURL)
 	c.Services.MonitorURL = getEnv("MONITOR_URL", c.Services.MonitorURL)
+
+	// Server timeouts
+	if v := getEnvInt("SERVER_READ_TIMEOUT_SEC", 0); v > 0 {
+		c.Server.ReadTimeoutSec = v
+	}
+	if v := getEnvInt("SERVER_WRITE_TIMEOUT_SEC", 0); v > 0 {
+		c.Server.WriteTimeoutSec = v
+	}
+	if v := getEnvInt("SERVER_IDLE_TIMEOUT_SEC", 0); v > 0 {
+		c.Server.IdleTimeoutSec = v
+	}
+	if v := getEnvInt("SERVER_SHUTDOWN_TIMEOUT_SEC", 0); v > 0 {
+		c.Server.ShutdownTimeout = v
+	}
+	if origins := getEnv("CORS_ALLOW_ORIGINS", ""); origins != "" {
+		c.Server.CORSAllowOrigins = splitCSV(origins)
+	}
+
+	// Escrow extended
+	if v := getEnvFloat("DEFAULT_TRUST_SCORE", 0); v > 0 {
+		c.Escrow.DefaultTrustScore = v
+	}
+	if v := getEnvFloat("FAILURE_TAX_RATE", 0); v > 0 {
+		c.Escrow.FailureTaxRate = v
+	}
+	if v := getEnvInt("JIT_ENTITLEMENT_TTL_SEC", 0); v > 0 {
+		c.Escrow.JITEntitlementTTL = v
+	}
+
+	// Federation
+	c.Federation.InstanceID = getEnv("OCX_INSTANCE_ID", c.Federation.InstanceID)
+	c.Federation.TrustDomain = getEnv("OCX_TRUST_DOMAIN", c.Federation.TrustDomain)
+	c.Federation.Region = getEnv("OCX_REGION", c.Federation.Region)
+	c.Federation.Organization = getEnv("OCX_ORG", c.Federation.Organization)
+
+	// Webhooks
+	if v := getEnvInt("WEBHOOK_WORKERS", 0); v > 0 {
+		c.Webhook.WorkerCount = v
+	}
+
+	// Evidence
+	if v := getEnvInt("EVIDENCE_RETENTION_DAYS", 0); v > 0 {
+		c.Evidence.RetentionDays = v
+	}
+
+	// Pub/Sub
+	if projectID := getEnv("GCP_PROJECT_ID", ""); projectID != "" {
+		c.PubSub.ProjectID = projectID
+		c.CloudTasks.ProjectID = projectID // share project
+	}
+	c.PubSub.TopicID = getEnv("PUBSUB_TOPIC_ID", c.PubSub.TopicID)
+	c.PubSub.Enabled = getEnvBool("PUBSUB_ENABLED", c.PubSub.Enabled)
+
+	// Cloud Tasks
+	c.CloudTasks.LocationID = getEnv("CLOUD_TASKS_LOCATION", c.CloudTasks.LocationID)
+	c.CloudTasks.QueueID = getEnv("CLOUD_TASKS_QUEUE", c.CloudTasks.QueueID)
+	c.CloudTasks.Enabled = getEnvBool("CLOUD_TASKS_ENABLED", c.CloudTasks.Enabled)
+
+	// Security (Claims 7+8)
+	c.Security.HMACSecret = getEnv("OCX_HMAC_SECRET", c.Security.HMACSecret)
+	if v := getEnvInt("OCX_TOKEN_TTL_SEC", 0); v > 0 {
+		c.Security.TokenTTLSec = v
+	}
+	if v := getEnvFloat("OCX_MIN_TRUST_FOR_TOKEN", 0); v > 0 {
+		c.Security.MinTrustForToken = v
+	}
+
+	// Sovereign Mode (Claim 12)
+	c.Sovereign.Enabled = getEnvBool("OCX_SOVEREIGN_MODE", c.Sovereign.Enabled)
+	c.Sovereign.LocalInferenceEndpoint = getEnv("OCX_LOCAL_INFERENCE_ENDPOINT", c.Sovereign.LocalInferenceEndpoint)
+	c.Sovereign.BoundaryEnforced = getEnvBool("OCX_BOUNDARY_ENFORCED", c.Sovereign.BoundaryEnforced)
+
+	// Apply defaults for zero values
+	c.applyDefaults()
+}
+
+// applyDefaults sets sensible defaults for zero-valued config fields
+func (c *Config) applyDefaults() {
+	if c.Server.Port == "" {
+		c.Server.Port = "8080"
+	}
+	if c.Server.ReadTimeoutSec == 0 {
+		c.Server.ReadTimeoutSec = 15
+	}
+	if c.Server.WriteTimeoutSec == 0 {
+		c.Server.WriteTimeoutSec = 15
+	}
+	if c.Server.IdleTimeoutSec == 0 {
+		c.Server.IdleTimeoutSec = 60
+	}
+	if c.Server.ShutdownTimeout == 0 {
+		c.Server.ShutdownTimeout = 30
+	}
+	if len(c.Server.CORSAllowOrigins) == 0 {
+		c.Server.CORSAllowOrigins = []string{"*"}
+	}
+	if c.Escrow.EntropyThreshold == 0 {
+		c.Escrow.EntropyThreshold = 1.2
+	}
+	if c.Escrow.DefaultTrustScore == 0 {
+		c.Escrow.DefaultTrustScore = 0.5
+	}
+	if c.Escrow.FailureTaxRate == 0 {
+		c.Escrow.FailureTaxRate = 1.5
+	}
+	if c.Escrow.JITEntitlementTTL == 0 {
+		c.Escrow.JITEntitlementTTL = 300 // 5 minutes
+	}
+	if c.Federation.InstanceID == "" {
+		c.Federation.InstanceID = "ocx-local"
+	}
+	if c.Federation.TrustDomain == "" {
+		c.Federation.TrustDomain = "spiffe://ocx-local"
+	}
+	if c.Webhook.WorkerCount == 0 {
+		c.Webhook.WorkerCount = 4
+	}
+	if c.Evidence.RetentionDays == 0 {
+		c.Evidence.RetentionDays = 365
+	}
+	if c.PubSub.TopicID == "" {
+		c.PubSub.TopicID = "ocx-events"
+	}
+	if c.CloudTasks.LocationID == "" {
+		c.CloudTasks.LocationID = "us-central1"
+	}
+	if c.CloudTasks.QueueID == "" {
+		c.CloudTasks.QueueID = "ocx-webhooks"
+	}
+	// Security defaults
+	if c.Security.TokenTTLSec == 0 {
+		c.Security.TokenTTLSec = 300 // 5 minutes
+	}
+	if c.Security.MinTrustForToken == 0 {
+		c.Security.MinTrustForToken = 0.65
+	}
+	if c.Security.MaxTokensPerAgent == 0 {
+		c.Security.MaxTokensPerAgent = 50
+	}
+	if c.Security.CAESweepIntervalSec == 0 {
+		c.Security.CAESweepIntervalSec = 10
+	}
+	if c.Security.DriftThreshold == 0 {
+		c.Security.DriftThreshold = 0.20
+	}
+	if c.Security.TrustDropLimit == 0 {
+		c.Security.TrustDropLimit = 0.15
+	}
+	if c.Security.AnomalyThreshold == 0 {
+		c.Security.AnomalyThreshold = 5
+	}
 }
 
 // =============================================================================
@@ -233,6 +456,26 @@ func getEnvFloat(key string, defaultVal float64) float64 {
 		}
 	}
 	return defaultVal
+}
+
+func getEnvInt(key string, defaultVal int) int {
+	if val := os.Getenv(key); val != "" {
+		if i, err := strconv.Atoi(val); err == nil {
+			return i
+		}
+	}
+	return defaultVal
+}
+
+func splitCSV(s string) []string {
+	parts := make([]string, 0)
+	for _, p := range strings.Split(s, ",") {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return parts
 }
 
 // =============================================================================

@@ -1,0 +1,90 @@
+name: "OCX Governance Gate"
+description: "Run AI tool calls through OCX governance before deployment"
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  gateway_url:
+    description: "OCX Gateway URL"
+    required: true
+  api_key:
+    description: "OCX API Key"
+    required: true
+  tenant_id:
+    description: "OCX Tenant ID"
+    required: true
+  tool_name:
+    description: "Tool name to govern"
+    required: true
+  arguments:
+    description: "Tool arguments as JSON string"
+    required: false
+    default: "{}"
+  agent_id:
+    description: "Agent identifier"
+    required: false
+    default: "github-action"
+  fail_on_block:
+    description: "Fail the step if tool call is blocked"
+    required: false
+    default: "true"
+
+outputs:
+  verdict:
+    description: "Governance verdict (ALLOW/BLOCK/ESCROW)"
+  transaction_id:
+    description: "Transaction ID for the governance decision"
+  trust_score:
+    description: "Agent trust score"
+  action_class:
+    description: "Tool action class (CLASS_A/CLASS_B)"
+  reason:
+    description: "Reason for the verdict"
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Run OCX Governance Check"
+      shell: bash
+      run: |
+        RESPONSE=$(curl -s -w "\n%{http_code}" \
+          -X POST "${{ inputs.gateway_url }}/api/v1/govern" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ inputs.api_key }}" \
+          -H "X-Tenant-ID: ${{ inputs.tenant_id }}" \
+          -d '{
+            "tool_name": "${{ inputs.tool_name }}",
+            "agent_id": "${{ inputs.agent_id }}",
+            "tenant_id": "${{ inputs.tenant_id }}",
+            "arguments": ${{ inputs.arguments }},
+            "protocol": "github-action"
+          }')
+
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        BODY=$(echo "$RESPONSE" | sed '$d')
+
+        VERDICT=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('verdict','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
+        TX_ID=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('transaction_id',''))" 2>/dev/null || echo "")
+        TRUST=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('trust_score',0))" 2>/dev/null || echo "0")
+        CLASS=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('action_class',''))" 2>/dev/null || echo "")
+        REASON=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reason',''))" 2>/dev/null || echo "")
+
+        echo "verdict=$VERDICT" >> $GITHUB_OUTPUT
+        echo "transaction_id=$TX_ID" >> $GITHUB_OUTPUT
+        echo "trust_score=$TRUST" >> $GITHUB_OUTPUT
+        echo "action_class=$CLASS" >> $GITHUB_OUTPUT
+        echo "reason=$REASON" >> $GITHUB_OUTPUT
+
+        if [ "$VERDICT" = "ALLOW" ]; then
+          echo "✅ OCX Governance: ALLOW (trust=$TRUST, tx=$TX_ID)"
+        elif [ "$VERDICT" = "BLOCK" ]; then
+          echo "⛔ OCX Governance: BLOCK — $REASON (tx=$TX_ID)"
+          if [ "${{ inputs.fail_on_block }}" = "true" ]; then
+            exit 1
+          fi
+        elif [ "$VERDICT" = "ESCROW" ]; then
+          echo "⏳ OCX Governance: ESCROW — Held for review (tx=$TX_ID)"
+        else
+          echo "⚠️ OCX Governance: Unknown verdict $VERDICT"
+        fi

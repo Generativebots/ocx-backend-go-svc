@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -50,11 +51,10 @@ func main() {
 		ReportInterval:  *reportInterval,
 	}
 
-	log.Printf("🚀 Starting Economic Barrier Load Test")
-	log.Printf("   Transactions: %d", config.NumTransactions)
-	log.Printf("   Concurrency: %d", config.Concurrency)
-	log.Printf("   Duration: %v", config.Duration)
-
+	slog.Info("🚀 Starting Economic Barrier Load Test")
+	slog.Info("Transactions", "num_transactions", config.NumTransactions)
+	slog.Info("Concurrency", "concurrency", config.Concurrency)
+	slog.Info("Duration", "duration", config.Duration)
 	stats := runLoadTest(config)
 
 	// Print final results
@@ -180,9 +180,7 @@ func reportStats(ctx context.Context, stats *LoadTestStats, interval time.Durati
 			success := atomic.LoadUint64(&stats.SuccessfulReleases)
 			failed := atomic.LoadUint64(&stats.FailedValidations)
 
-			log.Printf("📊 Progress: %d txns | ✅ %d success | ❌ %d failed | Latency: min=%v max=%v",
-				total, success, failed, stats.MinLatency, stats.MaxLatency)
-
+			slog.Warn("Progress: txns | success | failed | Latency: min= max", "total", total, "success", success, "failed", failed, "min_latency", stats.MinLatency, "max_latency", stats.MaxLatency)
 		case <-ctx.Done():
 			return
 		}

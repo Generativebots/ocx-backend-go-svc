@@ -2,7 +2,8 @@ package ledger
 
 import (
 	"context"
-	"log"
+	"log/slog"
+	"time"
 
 	"github.com/ocx/backend/pb"
 
@@ -29,7 +30,7 @@ type TurnData struct {
 }
 
 func (al *AuditLogger) LogTurn(ctx context.Context, data *TurnData) {
-	// Use a background context or a worker pool to keep this non-blocking
+	// Use a background context with timeout to keep this non-blocking
 	go func() {
 		entry := &pb.LedgerEntry{
 			TurnId:     data.TurnID,
@@ -41,10 +42,13 @@ func (al *AuditLogger) LogTurn(ctx context.Context, data *TurnData) {
 			Timestamp:  timestamppb.Now(),
 		}
 
-		_, err := al.client.RecordEntry(context.Background(), entry)
+		rpcCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		_, err := al.client.RecordEntry(rpcCtx, entry)
 		if err != nil {
 			// Fallback: log to local disk if the Ledger service is down
-			log.Printf("CRITICAL: Ledger unreachable: %v", err)
+			slog.Error("CRITICAL: Ledger unreachable", "error", err)
 		}
 	}()
 }

@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
+	"time"
 )
+
+// httpClient is used for all outbound requests, ensuring a sensible timeout.
+var httpClient = &http.Client{Timeout: 10 * time.Second}
 
 // Config holds the client configuration
 type Config struct {
@@ -36,20 +40,23 @@ func (c *Client) CheckIn() error {
 
 // VerifyIntent sends an intent to the exchange and returns the trust token
 func (c *Client) VerifyIntent(action string, payload map[string]interface{}) (string, error) {
-	reqBody, _ := json.Marshal(map[string]interface{}{
+	reqBody, err := json.Marshal(map[string]interface{}{
 		"agent_id": c.Config.AgentID,
 		"action":   action,
 		"payload":  payload,
 	})
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal intent request: %w", err)
+	}
 
-	resp, err := http.Post(c.Config.ExchangeURL+"/verify-intent", "application/json", bytes.NewBuffer(reqBody))
+	resp, err := httpClient.Post(c.Config.ExchangeURL+"/verify-intent", "application/json", bytes.NewBuffer(reqBody))
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := ioutil.ReadAll(resp.Body)
+		body, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("trust exchange denied intent: %s", string(body))
 	}
 

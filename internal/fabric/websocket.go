@@ -4,10 +4,11 @@ package fabric
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -17,16 +18,29 @@ import (
 // In production (OCX_ENV=production), only origins listed in OCX_ALLOWED_ORIGINS
 // are accepted. In dev/staging, all origins are allowed with a warning.
 var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+	ReadBufferSize:  4096,
+	WriteBufferSize: 4096,
 	CheckOrigin:     buildCheckOrigin(),
 }
 
-// WebSocketSpoke represents an active WebSocket connection to a spoke
+const (
+	pongWait   = 60 * time.Second // Time allowed to read the next pong
+	pingPeriod = 30 * time.Second // Send pings at this interval (must be < pongWait)
+	writeWait  = 10 * time.Second // Time allowed to write a message
+	maxMsgSize = 512 * 1024       // 512KB max message size per frame
+	sendBuffer = 256              // Per-spoke outbound channel buffer
+)
+
+// WebSocketSpoke represents an active WebSocket connection to a spoke.
+// P0 FIX: All writes go through the Send channel → writePump goroutine,
+// eliminating concurrent write races between ping, response, and broadcast.
 type WebSocketSpoke struct {
+	hub   *Hub
 	Spoke *SpokeInfo
 	Conn  *websocket.Conn
-	Send  chan []byte
+	Send  chan []byte   // Buffered outbound messages
+	done  chan struct{} // Signals shutdown to writePump
+	once  sync.Once     // Ensures close only happens once
 }
 
 // buildCheckOrigin returns a CheckOrigin function based on the deployment environment.
@@ -40,20 +54,20 @@ func buildCheckOrigin() func(r *http.Request) bool {
 		for _, origin := range strings.Split(allowedRaw, ",") {
 			allowed[strings.TrimSpace(origin)] = true
 		}
-		log.Printf("[WebSocket] L4 FIX: Origin allowlist active (%d origins)", len(allowed))
+		slog.Info("[WebSocket] L4 FIX: Origin allowlist active ( origins)", "count", len(allowed))
 		return func(r *http.Request) bool {
 			origin := r.Header.Get("Origin")
 			if allowed[origin] {
 				return true
 			}
-			log.Printf("[WebSocket] ❌ Rejected connection from origin: %s", origin)
+			slog.Info("[WebSocket] Rejected connection from origin", "origin", origin)
 			return false
 		}
 	}
 
 	// Dev/staging: allow all origins with warning
 	if env == "production" && allowedRaw == "" {
-		log.Println("[WebSocket] ⚠️  OCX_ALLOWED_ORIGINS not set in production — allowing all origins (INSECURE)")
+		slog.Info("[WebSocket] ⚠️  OCX_ALLOWED_ORIGINS not set in production — allowing all origins (INSECURE)")
 	}
 	return func(r *http.Request) bool {
 		return true
@@ -64,7 +78,7 @@ func buildCheckOrigin() func(r *http.Request) bool {
 func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("WebSocket upgrade failed: %v", err)
+		slog.Warn("WebSocket upgrade failed", "error", err)
 		return
 	}
 
@@ -82,79 +96,114 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Register as spoke with default capabilities
 	spoke, err := h.RegisterSpoke(tenantID, agentID, []Capability{CapabilityData}, 0.5, nil)
 	if err != nil {
-		log.Printf("Failed to register WebSocket spoke: %v", err)
+		slog.Warn("Failed to register WebSocket spoke", "error", err)
 		conn.Close()
 		return
 	}
 
-	log.Printf("WebSocket spoke connected: %s (tenant=%s)", spoke.ID, tenantID)
+	ws := &WebSocketSpoke{
+		hub:   h,
+		Spoke: spoke,
+		Conn:  conn,
+		Send:  make(chan []byte, sendBuffer),
+		done:  make(chan struct{}),
+	}
 
-	// Handle connection
-	go h.handleSpokeConnection(spoke, conn)
+	slog.Info("WebSocket spoke connected: (tenant=)", "i_d", spoke.ID, "tenant_i_d", tenantID)
+	// P0 FIX: Two goroutines with clear ownership:
+	// - writePump owns ALL writes to conn (ping, data, close)
+	// - readPump owns ALL reads from conn
+	// This eliminates concurrent write races.
+	go ws.writePump()
+	go ws.readPump()
 }
 
-// handleSpokeConnection manages the WebSocket message loop
-func (h *Hub) handleSpokeConnection(spoke *SpokeInfo, conn *websocket.Conn) {
-	const (
-		pongWait   = 60 * time.Second // Time allowed to read the next pong
-		pingPeriod = 30 * time.Second // Send pings at this interval (must be < pongWait)
-		writeWait  = 10 * time.Second // Time allowed to write a message
-	)
+// close safely shuts down the spoke connection exactly once.
+func (ws *WebSocketSpoke) close() {
+	ws.once.Do(func() {
+		close(ws.done)
+		ws.hub.UnregisterSpoke(ws.Spoke.ID)
+		ws.Conn.Close()
+		slog.Info("WebSocket spoke disconnected", "i_d", ws.Spoke.ID)
+	})
+}
 
+// writePump serializes ALL writes to the WebSocket connection.
+// P0 FIX: This is the ONLY goroutine that calls conn.WriteMessage,
+// eliminating the previous race between ping writes and response writes.
+func (ws *WebSocketSpoke) writePump() {
+	ticker := time.NewTicker(pingPeriod)
 	defer func() {
-		h.UnregisterSpoke(spoke.ID)
-		conn.Close()
-		log.Printf("WebSocket spoke disconnected: %s", spoke.ID)
+		ticker.Stop()
+		ws.close()
 	}()
 
-	// Set read deadline
-	conn.SetReadDeadline(time.Now().Add(pongWait))
-	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(pongWait))
+	for {
+		select {
+		case message, ok := <-ws.Send:
+			ws.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				// Send channel closed — send close frame
+				ws.Conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+
+			if err := ws.Conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				slog.Warn("Write failed for spoke", "i_d", ws.Spoke.ID, "error", err)
+				return
+			}
+
+			// Drain queued messages in the same write frame for efficiency
+			n := len(ws.Send)
+			for i := 0; i < n; i++ {
+				msg := <-ws.Send
+				if err := ws.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+					slog.Warn("Batch write failed for spoke", "i_d", ws.Spoke.ID, "error", err)
+					return
+				}
+			}
+
+		case <-ticker.C:
+			ws.Conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := ws.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				slog.Warn("Ping failed for spoke", "i_d", ws.Spoke.ID, "error", err)
+				return
+			}
+
+		case <-ws.done:
+			return
+		}
+	}
+}
+
+// readPump reads messages from the WebSocket connection and routes them.
+// This is the ONLY goroutine that calls conn.ReadMessage.
+func (ws *WebSocketSpoke) readPump() {
+	defer ws.close()
+
+	ws.Conn.SetReadLimit(maxMsgSize)
+	ws.Conn.SetReadDeadline(time.Now().Add(pongWait))
+	ws.Conn.SetPongHandler(func(string) error {
+		ws.Conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil
 	})
 
-	// M5 FIX: Start a ping ticker goroutine to keep the connection alive.
-	// Previously the server had a PongHandler but never sent Ping frames,
-	// so connections would die after 60s of spoke silence.
-	done := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(pingPeriod)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				conn.SetWriteDeadline(time.Now().Add(writeWait))
-				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					log.Printf("Ping failed for spoke %s: %v", spoke.ID, err)
-					return
-				}
-			case <-done:
-				return
-			}
-		}
-	}()
-
-	defer close(done) // Stop the ping ticker when the read loop exits
-
 	for {
-		_, payload, err := conn.ReadMessage()
+		_, payload, err := ws.Conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket error: %v", err)
+				slog.Warn("WebSocket error", "error", err)
 			}
-			break
+			return
 		}
 
-		// Update last seen
-		spoke.LastSeen = time.Now()
-		spoke.MessageCount++
-		spoke.BytesRecv += int64(len(payload))
+		// P0 FIX #2: Update spoke stats via atomic operations (see hub.go changes)
+		ws.Spoke.Touch(int64(len(payload)))
 
 		// Parse message and route through hub
 		var msg WSMessage
 		if err := json.Unmarshal(payload, &msg); err != nil {
-			log.Printf("Invalid message format: %v", err)
+			slog.Info("Invalid message format", "error", err)
 			continue
 		}
 
@@ -162,36 +211,42 @@ func (h *Hub) handleSpokeConnection(spoke *SpokeInfo, conn *websocket.Conn) {
 		hubMsg := &Message{
 			ID:          msg.ID,
 			Type:        msg.Type,
-			Source:      spoke.VirtualAddr,
+			Source:      ws.Spoke.VirtualAddr,
 			Destination: VirtualAddress(msg.Destination),
-			TenantID:    spoke.TenantID,
+			TenantID:    ws.Spoke.TenantID,
 			Payload:     payload,
 			Timestamp:   time.Now(),
 			TTL:         5,
 		}
 
-		result, err := h.Route(context.Background(), hubMsg)
+		result, err := ws.hub.Route(context.Background(), hubMsg)
 		if err != nil {
-			log.Printf("Hub routing failed: %v", err)
-			// Send error response
+			slog.Warn("Hub routing failed", "error", err)
+			// Send error response via write pump (non-blocking)
 			errResp, _ := json.Marshal(map[string]string{
 				"error": err.Error(),
 				"id":    msg.ID,
 			})
-			conn.SetWriteDeadline(time.Now().Add(writeWait))
-			conn.WriteMessage(websocket.TextMessage, errResp)
+			select {
+			case ws.Send <- errResp:
+			default:
+				slog.Warn("Send buffer full for spoke , dropping error response", "i_d", ws.Spoke.ID)
+			}
 			continue
 		}
 
-		// Send success response
+		// Send success response via write pump (non-blocking)
 		resp, _ := json.Marshal(map[string]interface{}{
 			"id":           msg.ID,
 			"status":       "routed",
 			"destinations": result.Destinations,
 			"hops":         result.HopsUsed,
 		})
-		conn.SetWriteDeadline(time.Now().Add(writeWait))
-		conn.WriteMessage(websocket.TextMessage, resp)
+		select {
+		case ws.Send <- resp:
+		default:
+			slog.Info("Send buffer full for spoke , dropping response", "i_d", ws.Spoke.ID)
+		}
 	}
 }
 

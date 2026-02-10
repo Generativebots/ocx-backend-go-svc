@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"github.com/ocx/backend/internal/plan"
 
 	socketio "github.com/googollee/go-socket.io"
@@ -31,7 +31,7 @@ func (gn *GovernanceNode) ProcessAgentTurn(agentID string, payload []byte) {
 		// 1. Execute Ghost-Turn (Simulation) in a non-blocking goroutine
 		shadowData, err := gn.Sandbox.Execute(payload)
 		if err != nil {
-			log.Printf("Sandbox Failure for %s: %v", agentID, err)
+			slog.Warn("Sandbox Failure for", "agent_i_d", agentID, "error", err)
 			return
 		}
 
@@ -42,22 +42,22 @@ func (gn *GovernanceNode) ProcessAgentTurn(agentID string, payload []byte) {
 		plan := gn.PlanManager.GetPlan(agentID)
 
 		if plan == nil {
-			log.Printf("No plan for %s", agentID)
+			slog.Info("No plan for", "agent_i_d", agentID)
 			return
 		}
 
 		if plan.ManualReviewRequired {
 			// Send results to Socket.IO for human intervention
 			// gn.Synapse.BroadcastToNamespace("/", "awaiting_manual_approval", result)
-			log.Printf("MANUAL REVIEW: Agent %s waiting...", agentID)
+			slog.Info("MANUAL REVIEW: Agent waiting...", "agent_i_d", agentID)
 		} else {
 			// AUTO-COMMIT: If aligned, push to production kernel
 			if result.IsAligned {
 				// gn.releaseToKernel(agentID)
-				log.Printf("AUTO-COMMIT: Agent %s aligned.", agentID)
+				slog.Info("AUTO-COMMIT: Agent aligned.", "agent_i_d", agentID)
 			} else {
 				// gn.blockAgent(agentID, result.Diff)
-				log.Printf("BLOCKED: Agent %s mismatch: %s", agentID, result.Diff)
+				slog.Info("BLOCKED: Agent mismatch", "agent_i_d", agentID, "diff", result.Diff)
 			}
 		}
 	}()

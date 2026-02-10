@@ -83,10 +83,6 @@ func (m *MockEntropyMonitor) calculateShannonEntropy(data []byte) float64 {
 // TransactionIDGenerator creates unique transaction IDs
 type TransactionIDGenerator struct{}
 
-func NewTransactionIDGenerator() *TransactionIDGenerator {
-	return &TransactionIDGenerator{}
-}
-
 func (g *TransactionIDGenerator) Generate(agentID string, payload []byte) string {
 	// Create deterministic ID from agent + payload hash
 	hasher := sha256.New()

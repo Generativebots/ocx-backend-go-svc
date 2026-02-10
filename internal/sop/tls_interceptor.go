@@ -7,7 +7,7 @@ package sop
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -67,8 +67,7 @@ func NewTLSInterceptor() (*TLSInterceptor, error) {
 func (ti *TLSInterceptor) loadeBPF() error {
 	// In production, this would use bpf2go generated code
 	// For now, placeholder
-	log.Println("📡 Loading TLS interception eBPF program...")
-
+	slog.Info("Loading TLS interception eBPF program...")
 	// Load compiled eBPF object
 	// spec, err := ebpf.LoadCollectionSpec("tls_uprobe.bpf.o")
 	// if err != nil {
@@ -83,21 +82,20 @@ func (ti *TLSInterceptor) loadeBPF() error {
 
 // attachProbes attaches uProbes to SSL libraries
 func (ti *TLSInterceptor) attachProbes() error {
-	log.Println("🔗 Attaching TLS uProbes...")
-
+	slog.Info("Attaching TLS uProbes...")
 	// Attach to OpenSSL
 	if err := ti.attachOpenSSL(); err != nil {
-		log.Printf("⚠️  OpenSSL attach failed: %v", err)
+		slog.Warn("OpenSSL attach failed", "error", err)
 	}
 
 	// Attach to BoringSSL
 	if err := ti.attachBoringSSL(); err != nil {
-		log.Printf("⚠️  BoringSSL attach failed: %v", err)
+		slog.Warn("BoringSSL attach failed", "error", err)
 	}
 
 	// Attach to Go crypto/tls
 	if err := ti.attachGoCrypto(); err != nil {
-		log.Printf("⚠️  Go crypto attach failed: %v", err)
+		slog.Warn("Go crypto attach failed", "error", err)
 	}
 
 	return nil
@@ -111,8 +109,7 @@ func (ti *TLSInterceptor) attachOpenSSL() error {
 		return fmt.Errorf("libssl.so not found")
 	}
 
-	log.Printf("📚 Found OpenSSL: %s", libPath)
-
+	slog.Info("Found OpenSSL", "lib_path", libPath)
 	// Attach SSL_write
 	// ex, err := link.OpenExecutable(libPath)
 	// if err != nil {
@@ -206,9 +203,7 @@ func (ti *TLSInterceptor) ProcessEvent(event *TLSEvent) {
 	// Extract plaintext
 	plaintext := string(event.Data[:event.DataLen])
 
-	log.Printf("🔓 TLS %s [%s] PID:%d TID:%d Len:%d\n%s",
-		direction, library, event.PID, event.TID, event.DataLen, plaintext)
-
+	slog.Info("TLS [] PID: TID: Len:\n", "direction", direction, "library", library, "p_i_d", event.PID, "t_i_d", event.TID, "data_len", event.DataLen, "plaintext", plaintext)
 	// Send to Entropy Monitor for analysis
 	// Send to APE Engine for intent extraction
 }

@@ -1,0 +1,289 @@
+openapi: "3.1.0"
+info:
+  title: OCX Governance API
+  version: "1.0.0"
+  description: |
+    Universal AI Agent Governance API. Any AI agent, framework, or software
+    can integrate with OCX by calling this API — no custom SDK required.
+
+    **Auto-generate clients:**
+    ```
+    npx @openapitools/openapi-generator-cli generate -i openapi.yaml -g typescript-axios
+    npx @openapitools/openapi-generator-cli generate -i openapi.yaml -g java
+    npx @openapitools/openapi-generator-cli generate -i openapi.yaml -g csharp
+    ```
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+paths:
+  /api/v1/govern:
+    post:
+      operationId: governToolCall
+      summary: Govern an AI tool call
+      tags: [Governance]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToolRequest"
+      responses:
+        "200":
+          description: Tool call ALLOWED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovernanceResult"
+        "202":
+          description: Tool call held in ESCROW
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovernanceResult"
+        "403":
+          description: Tool call BLOCKED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovernanceResult"
+
+  /api/v1/tools:
+    get:
+      operationId: listTools
+      summary: List registered tools
+      tags: [Tool Catalog]
+      responses:
+        "200":
+          description: List of registered tools
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ToolDefinition"
+    post:
+      operationId: registerTool
+      summary: Register a new tool
+      tags: [Tool Catalog]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToolDefinition"
+      responses:
+        "201":
+          description: Tool registered
+
+  /api/v1/tools/{toolName}:
+    get:
+      operationId: getTool
+      tags: [Tool Catalog]
+      parameters:
+        - name: toolName
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Tool definition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolDefinition"
+    delete:
+      operationId: deleteTool
+      tags: [Tool Catalog]
+      parameters:
+        - name: toolName
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Tool removed
+
+  /api/v1/webhooks:
+    get:
+      operationId: listWebhooks
+      tags: [Webhooks]
+      responses:
+        "200":
+          description: Registered webhooks
+    post:
+      operationId: registerWebhook
+      tags: [Webhooks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookSubscription"
+      responses:
+        "201":
+          description: Webhook registered
+
+  /api/v1/webhooks/{webhookId}:
+    delete:
+      operationId: deleteWebhook
+      tags: [Webhooks]
+      parameters:
+        - name: webhookId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Webhook removed
+
+  /api/v1/events/stream:
+    get:
+      operationId: streamEvents
+      summary: SSE stream for governance events
+      tags: [Events]
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream: {}
+
+  /api/v1/plugins:
+    get:
+      operationId: listPlugins
+      tags: [Plugins]
+      responses:
+        "200":
+          description: Registered plugins
+
+  /api/reputation/{agentId}:
+    get:
+      operationId: getReputation
+      tags: [Reputation]
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Agent reputation
+
+  /.well-known/ocx-governance.json:
+    get:
+      operationId: agentCard
+      summary: Service discovery
+      tags: [Discovery]
+      responses:
+        "200":
+          description: OCX Agent Card
+
+components:
+  schemas:
+    ToolRequest:
+      type: object
+      required: [tool_name, agent_id, tenant_id]
+      properties:
+        tool_name:
+          type: string
+          example: "execute_payment"
+        agent_id:
+          type: string
+        tenant_id:
+          type: string
+        arguments:
+          type: object
+          additionalProperties: true
+        model:
+          type: string
+        session_id:
+          type: string
+        protocol:
+          type: string
+
+    GovernanceResult:
+      type: object
+      properties:
+        transaction_id:
+          type: string
+        verdict:
+          type: string
+          enum: [ALLOW, BLOCK, ESCROW, ESCALATE]
+        action_class:
+          type: string
+          enum: [CLASS_A, CLASS_B]
+        reason:
+          type: string
+        trust_score:
+          type: number
+        governance_tax:
+          type: number
+        escrow_id:
+          type: string
+        entitlement_id:
+          type: string
+        evidence_hash:
+          type: string
+        processed_at:
+          type: string
+          format: date-time
+
+    ToolDefinition:
+      type: object
+      required: [name, action_class]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        action_class:
+          type: string
+          enum: [CLASS_A, CLASS_B]
+        schema:
+          type: object
+        governance_policy:
+          type: object
+          properties:
+            min_trust_score:
+              type: number
+            require_human_review:
+              type: boolean
+            max_amount:
+              type: number
+            allowed_tiers:
+              type: array
+              items:
+                type: string
+
+    WebhookSubscription:
+      type: object
+      required: [url, events]
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+        secret:
+          type: string
+        active:
+          type: boolean
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+security:
+  - bearerAuth: []

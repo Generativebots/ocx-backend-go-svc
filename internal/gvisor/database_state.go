@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	_ "github.com/lib/pq" // PostgreSQL driver
@@ -49,8 +49,7 @@ func (dsm *DatabaseStateManager) CreateSavepoint(ctx context.Context, savepointN
 		return nil, fmt.Errorf("failed to create savepoint: %w", err)
 	}
 
-	log.Printf("📸 Created database savepoint: %s", savepointName)
-
+	slog.Info("Created database savepoint", "savepoint_name", savepointName)
 	return tx, nil
 }
 
@@ -72,8 +71,7 @@ func (dsm *DatabaseStateManager) RollbackToSavepoint(ctx context.Context, tx *sq
 		return fmt.Errorf("failed to rollback transaction: %w", err)
 	}
 
-	log.Printf("⏪ Rolled back to savepoint: %s", savepointName)
-
+	slog.Info("Rolled back to savepoint", "savepoint_name", savepointName)
 	return nil
 }
 
@@ -90,8 +88,7 @@ func (dsm *DatabaseStateManager) CommitSavepoint(ctx context.Context, tx *sql.Tx
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	log.Printf("✅ Committed savepoint: %s", savepointName)
-
+	slog.Info("Committed savepoint", "savepoint_name", savepointName)
 	return nil
 }
 
@@ -129,33 +126,4 @@ func (dsm *DatabaseStateManager) CloneAgentState(ctx context.Context, tx *sql.Tx
 // Close closes the database connection
 func (dsm *DatabaseStateManager) Close() error {
 	return dsm.db.Close()
-}
-
-// Example usage
-func ExampleDatabaseStateManager() {
-	dsm, err := NewDatabaseStateManager("postgres://user:pass@localhost/ocx?sslmode=disable")
-	if err != nil {
-		log.Fatalf("Failed to create database state manager: %v", err)
-	}
-	defer dsm.Close()
-
-	ctx := context.Background()
-
-	// Create savepoint
-	tx, err := dsm.CreateSavepoint(ctx, "sp_tx_12345")
-	if err != nil {
-		log.Fatalf("Failed to create savepoint: %v", err)
-	}
-
-	// Clone agent state
-	state, err := dsm.CloneAgentState(ctx, tx, "AGENT_001", "sp_tx_12345")
-	if err != nil {
-		log.Fatalf("Failed to clone agent state: %v", err)
-	}
-
-	fmt.Printf("Cloned state: %+v\n", state)
-
-	// Later: Rollback or Commit
-	// dsm.RollbackToSavepoint(ctx, tx, "sp_tx_12345")
-	// dsm.CommitSavepoint(ctx, tx, "sp_tx_12345")
 }

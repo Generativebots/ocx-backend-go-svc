@@ -27,12 +27,6 @@ type snapshotServiceImpl struct {
 	store map[string]*Snapshot
 }
 
-func NewSnapshotService() SnapshotService {
-	return &snapshotServiceImpl{
-		store: make(map[string]*Snapshot),
-	}
-}
-
 // CaptureState generates a SHA-256 hash of the current state.
 func (s *snapshotServiceImpl) CaptureState(turnID string, currentState interface{}) (*Snapshot, error) {
 	data, err := json.Marshal(currentState)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -73,7 +73,7 @@ func (pm *PoolManager) Put(c *GhostContainer) {
 		defer cancel()
 
 		if err := pm.scrubContainer(ctx, c); err != nil {
-			log.Printf("Failed to scrub container %s: %v. Destroying.", c.ID, err)
+			slog.Warn("Failed to scrub container : Destroying.", "i_d", c.ID, "error", err)
 			// If scrub fails, destroy the container instead of returning it
 			pm.destroyContainer(ctx, c)
 			return
@@ -151,7 +151,7 @@ func (pm *PoolManager) createContainer() {
 	ctx := context.Background()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		log.Printf("Error creating docker client: %v", err)
+		slog.Warn("Error creating docker client", "error", err)
 		return
 	}
 	defer cli.Close()
@@ -178,12 +178,12 @@ func (pm *PoolManager) createContainer() {
 		Cmd:   []string{"sleep", "infinity"}, // Keep alive
 	}, hostConfig, nil, nil, "")
 	if err != nil {
-		log.Printf("Failed to create ghost container: %v", err)
+		slog.Warn("Failed to create ghost container", "error", err)
 		return
 	}
 
 	if err := cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{}); err != nil {
-		log.Printf("Failed to start ghost container: %v", err)
+		slog.Warn("Failed to start ghost container", "error", err)
 		return
 	}
 
@@ -193,28 +193,28 @@ func (pm *PoolManager) createContainer() {
 	}
 
 	pm.available <- c
-	log.Printf("Ghost Container %s pre-warmed", resp.ID[:12])
+	slog.Info("Ghost Container pre-warmed", "i_d12", resp.ID[:12])
 }
 
 // destroyContainer FORCEFULLY removes a container and its resources
 func (pm *PoolManager) destroyContainer(ctx context.Context, c *GhostContainer) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		log.Printf("Failed to create client for destroy: %v", err)
+		slog.Warn("Failed to create client for destroy", "error", err)
 		return
 	}
 	defer cli.Close()
 
 	// Force remove container
 	if err := cli.ContainerRemove(ctx, c.ID, types.ContainerRemoveOptions{Force: true}); err != nil {
-		log.Printf("Failed to force remove container %s: %v", c.ID, err)
+		slog.Warn("Failed to force remove container", "i_d", c.ID, "error", err)
 	}
 
 	// Remove sandbox directory
 	dir := filepath.Join("/tmp", "ocx-sandboxes", c.ID)
 	os.RemoveAll(dir)
 
-	log.Printf("🧹 Cleaned up container resources: %s", c.ID)
+	slog.Info("Cleaned up container resources", "i_d", c.ID)
 }
 
 // ExecuteSpeculative runs a command inside a specific container (using runsc/docker exec)
@@ -257,4 +257,20 @@ func (pm *PoolManager) ExecuteSpeculative(ctx context.Context, containerID strin
 	output, _ := io.ReadAll(resp.Reader)
 
 	return output, nil
+}
+
+// Stats returns current pool statistics.
+func (pm *PoolManager) Stats() map[string]interface{} {
+	pm.mu.Lock()
+	activeCount := len(pm.active)
+	pm.mu.Unlock()
+
+	availableCount := len(pm.available)
+
+	return map[string]interface{}{
+		"active_containers": activeCount,
+		"idle_containers":   availableCount,
+		"total_capacity":    pm.maxCapacity,
+		"min_idle":          pm.minIdle,
+	}
 }

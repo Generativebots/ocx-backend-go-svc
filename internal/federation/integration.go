@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -37,9 +37,7 @@ func NewTrustAttestationLedgerWithID(localInstanceID string) *TrustAttestationLe
 // VerifyAttestation verifies attestation hashes and records the handshake
 // in the PersistentTrustLedger for trust history tracking.
 func (tal *TrustAttestationLedger) VerifyAttestation(ctx context.Context, localHash, remoteHash, agentID string) (*TrustAttestation, error) {
-	log.Printf("🔍 Verifying attestation: agent=%s, local_hash=%s, remote_hash=%s",
-		agentID, localHash[:8], remoteHash[:8])
-
+	slog.Info("Verifying attestation: agent=, local_hash=, remote_hash", "agent_i_d", agentID, "local_hash8", localHash[:8], "remote_hash8", remoteHash[:8])
 	// Derive a remote instance ID from the remote hash for ledger tracking
 	remoteInstanceID := deriveInstanceID(remoteHash)
 
@@ -79,9 +77,7 @@ func (tal *TrustAttestationLedger) VerifyAttestation(ctx context.Context, localH
 		ExpiresAt:     event.Timestamp.Add(24 * time.Hour),
 	}
 
-	log.Printf("✅ Attestation verified via PersistentTrustLedger: trust=%.2f, event=%s",
-		attestation.TrustLevel, event.EventID)
-
+	slog.Info("Attestation verified via PersistentTrustLedger: trust=, event", "trust_level", attestation.TrustLevel, "event_i_d", event.EventID)
 	return attestation, nil
 }
 
@@ -95,51 +91,4 @@ func (tal *TrustAttestationLedger) GetPersistentLedger() *PersistentTrustLedger 
 func deriveInstanceID(hash string) string {
 	h := sha256.Sum256([]byte(hash))
 	return "ocx-" + hex.EncodeToString(h[:8])
-}
-
-// Example: Complete Inter-OCX handshake flow
-func ExampleHandshakeFlow() {
-	// 1. Initialize components with real persistent ledger
-	ledger := NewTrustAttestationLedgerWithID("ocx-us-west1-001")
-	registry := NewFederationRegistry()
-
-	// 2. Create local and remote OCX instances
-	localOCX := &OCXInstance{
-		InstanceID:   "ocx-us-west1-001",
-		TrustDomain:  "ocx.example.com",
-		Region:       "us-west1",
-		Organization: "Example Corp",
-	}
-
-	remoteOCX := &OCXInstance{
-		InstanceID:   "ocx-eu-west1-002",
-		TrustDomain:  "ocx.partner.com",
-		Region:       "eu-west1",
-		Organization: "Partner Corp",
-	}
-
-	// 3. Register instances
-	registry.Register(localOCX)
-	registry.Register(remoteOCX)
-
-	// 4. Perform handshake (now uses PersistentTrustLedger internally)
-	handshake := NewInterOCXHandshake(localOCX, remoteOCX, ledger)
-
-	ctx := context.Background()
-	attestation, err := handshake.Negotiate(ctx, "AGENT_001")
-	if err != nil {
-		log.Fatalf("Handshake failed: %v", err)
-	}
-
-	fmt.Printf("✅ Handshake successful!\n")
-	fmt.Printf("   Trust Level: %.2f\n", attestation.TrustLevel)
-	fmt.Printf("   Attestation ID: %s\n", attestation.AttestationID)
-
-	// 5. Charge trust tax based on actual trust score
-	fee := 0.01 * (1.0 / attestation.TrustLevel)
-	fmt.Printf("💰 Trust tax: $%.4f\n", fee)
-
-	// 6. Query persistent ledger for historical data
-	trustedInstances := ledger.GetPersistentLedger().ListTrustedInstances(0.3)
-	fmt.Printf("📊 Trusted instances: %d\n", len(trustedInstances))
 }

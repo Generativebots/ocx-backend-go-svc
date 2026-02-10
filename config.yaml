@@ -114,12 +114,16 @@ impact:
 
 # -----------------------------------------------------------------------------
 # Python Service URLs (for Go → Python communication)
+# On Cloud Run, each service has its own URL and listens on :8000
+# For local dev, use distinct ports to avoid conflicts
 # -----------------------------------------------------------------------------
 services:
   trust_registry_url: "${TRUST_REGISTRY_URL:-http://localhost:8000}"
-  jury_grpc_addr: "${JURY_SERVICE_ADDR:-localhost:50051}"
-  activity_registry_url: "${ACTIVITY_REGISTRY_URL:-http://localhost:8003}"
-  evidence_vault_url: "${EVIDENCE_VAULT_URL:-http://localhost:8004}"
-  authority_url: "${AUTHORITY_URL:-http://localhost:8005}"
-  monitor_url: "${MONITOR_URL:-http://localhost:8006}"
+  jury_grpc_addr: "${JURY_SERVICE_ADDR:-localhost:8001}"
+  activity_registry_url: "${ACTIVITY_REGISTRY_URL:-http://localhost:8002}"
+  evidence_vault_url: "${EVIDENCE_VAULT_URL:-http://localhost:8003}"
+  authority_url: "${AUTHORITY_URL:-http://localhost:8004}"
+  monitor_url: "${MONITOR_URL:-http://localhost:8005}"
+  ledger_url: "${LEDGER_URL:-http://localhost:8006}"
+
 

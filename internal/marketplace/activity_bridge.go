@@ -8,7 +8,7 @@ package marketplace
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -79,9 +79,7 @@ func (arb *ActivityRegistryBridge) DeployTemplate(
 	key := fmt.Sprintf("%s:%s", tenantID, template.ID)
 	arb.deployments[key] = deployment
 
-	log.Printf("🚀 Template deployed as activity: template=%s activity=%s tenant=%s",
-		template.Name, activityID, tenantID)
-
+	slog.Info("Template deployed as activity: template= activity= tenant", "name", template.Name, "activity_i_d", activityID, "tenant_i_d", tenantID)
 	// 4. In production, would also:
 	//    - INSERT INTO activity_deployments (activity_id, environment, tenant_id, ...)
 	//    - Notify the EBCL runtime to start executing the activity
@@ -99,8 +97,7 @@ func (arb *ActivityRegistryBridge) UndeployTemplate(tenantID, templateID string)
 	}
 
 	deployment.Status = "suspended"
-	log.Printf("⏹️ Template activity suspended: activity=%s tenant=%s", deployment.ActivityID, tenantID)
-
+	slog.Info("Template activity suspended: activity= tenant", "activity_i_d", deployment.ActivityID, "tenant_i_d", tenantID)
 	// In production: UPDATE activities SET status = 'SUSPENDED', deactivate triggers
 	return nil
 }

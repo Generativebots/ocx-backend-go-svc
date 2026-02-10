@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
@@ -94,18 +96,17 @@ func main() {
 
 	// Observability Filter
 	if err := objs.PidsToTrace.Put(&targetPID, uint8(1)); err != nil {
-		log.Printf("Failed to add PID %d to filter: %v", targetPID, err)
+		slog.Warn("Failed to add PID to filter", "target_p_i_d", targetPID, "error", err)
 	}
 
 	// Verdict Cache: Pre-Approve this loader process (Self-Preservation)
 	// Verdict 1 = ALLOW.
 	allowVerdict := uint32(1)
 	if err := objs.VerdictCache.Put(&targetPID, &allowVerdict); err != nil {
-		log.Printf("Failed to whitelist PID %d: %v", targetPID, err)
+		slog.Warn("Failed to whitelist PID", "target_p_i_d", targetPID, "error", err)
 	}
 
-	log.Printf("Monitoring & Enforcing on PID: %d via RingBuffer + LSM", targetPID)
-
+	slog.Info("Monitoring & Enforcing on PID: via RingBuffer + LSM", "target_p_i_d", targetPID)
 	// Also attach the Kprobe for state tracking (Buffer Address capture)
 	// The "Sound-Proof" architecture requires both: Entry (to get address) + Exit (to read data)
 	kprobe, err := link.Kprobe("sys_read", objs.KprobeSysRead, nil)
@@ -135,8 +136,7 @@ func main() {
 	}
 	defer rdExit.Close()
 
-	log.Println("High-Performance Interceptor Active (RingBuffer + sync.Pool)...")
-
+	slog.Info("High-Performance Interceptor Active (RingBuffer + sync.Pool)...")
 	// --- Synapse Bridge: Socket.IO Server ---
 	// This allows the Frontend (TrustDashboard) to see the live pulse.
 	ioServer, err := setupSocketServer()
@@ -145,7 +145,7 @@ func main() {
 	}
 	// Start HTTP Server for Socket.IO
 	go func() {
-		log.Println("Synapse Bridge (Socket.IO) listening on :8080")
+		slog.Info("Synapse Bridge (Socket.IO) listening on :8080")
 		if err := http.ListenAndServe(":8080", nil); err != nil {
 			log.Fatal("Synapse Bridge failed: ", err)
 		}
@@ -166,15 +166,13 @@ func main() {
 		log.Fatalf("Failed to initialize Reputation Wallet: %v", err)
 	}
 	defer reputationWallet.Close()
-	log.Println("Reputation Wallet initialized")
-
+	slog.Info("Reputation Wallet initialized")
 	// Create Escrow Gate with mock clients
 	escrowGate := escrow.NewEscrowGate(
 		escrow.NewMockJuryClient(),
 		escrow.NewMockEntropyMonitor(),
 	)
-	log.Println("Economic Barrier (Escrow Gate) initialized")
-
+	slog.Info("Economic Barrier (Escrow Gate) initialized")
 	// --- Plan Service gRPC Server with Economic Barrier ---
 	go func() {
 		lis, err := net.Listen("tcp", ":50051")
@@ -186,10 +184,9 @@ func main() {
 			grpc.UnaryInterceptor(escrow.EscrowInterceptor(escrowGate)),
 			grpc.StreamInterceptor(escrow.StreamEscrowInterceptor(escrowGate)),
 		)
-		log.Println("Plan Service (gRPC) listening on :50051 with Economic Barrier")
-
+		slog.Info("Plan Service (gRPC) listening on :50051 with Economic Barrier")
 		if err := grpcServer.Serve(lis); err != nil {
-			log.Printf("gRPC server error: %v", err)
+			slog.Warn("gRPC server error", "error", err)
 		}
 	}()
 	// --------------------------------------------
@@ -210,7 +207,7 @@ func main() {
 				if errors.Is(err, ringbuf.ErrClosed) {
 					return
 				}
-				log.Printf("Read error: %v", err)
+				slog.Warn("Read error", "error", err)
 				continue
 			}
 
@@ -220,7 +217,7 @@ func main() {
 			// Fast-parse the binary data directly into our struct.
 			// FIX: binary.LittleEndian.Reader is invalid. generic binary.Read with bytes.NewReader is used.
 			if err := binary.Read(bytes.NewReader(record.RawSample), binary.LittleEndian, event); err != nil {
-				log.Printf("Parse error: %v", err)
+				slog.Warn("Parse error", "error", err)
 				eventPool.Put(event)
 				continue
 			}
@@ -232,7 +229,7 @@ func main() {
 
 	<-ctx.Done()
 	ioServer.Close() // Cleanup
-	log.Println("Shutting down gracefully...")
+	slog.Info("Shutting down gracefully...")
 }
 
 // --- Identity Enrichment (Patent-Ready) ---
@@ -287,7 +284,7 @@ func (c *IdentityCache) Resolve(pid uint32) (Identity, error) {
 
 // WatchExits monitors the exit_events ring buffer and evicts PIDs from the cache.
 func (c *IdentityCache) WatchExits(rd *ringbuf.Reader) {
-	log.Println("Lifecycle Manager Active: Watching for Process Exits...")
+	slog.Info("Lifecycle Manager Active: Watching for Process Exits...")
 	for {
 		record, err := rd.Read()
 		if err != nil {
@@ -454,37 +451,43 @@ func (wg *WorkerGroup) worker(ctx context.Context) {
 					if isAligned || sessionPlan.ExpectedOutcomeHash == "" { // Empty hash = allow all for demo
 						// Update Kernel Map to ALLOW
 						if err := wg.verdictUpdater.ReleaseProcess(ev.PID); err != nil {
-							log.Printf("Failed to release PID %d: %v", ev.PID, err)
+							slog.Warn("Failed to release PID", "p_i_d", ev.PID, "error", err)
 							action = "ERROR_COMMIT"
 						} else {
 							action = "AUTO_COMMITTED"
 
 							// --- PHASE 4: AUDIT LEDGER (ASYNC) ---
-							wg.auditLogger.LogTurn(context.Background(), &ledger.TurnData{
+							auditCtx, auditCancel := context.WithTimeout(context.Background(), 5*time.Second)
+							wg.auditLogger.LogTurn(auditCtx, &ledger.TurnData{
 								TurnID:     stack.TurnID,
 								AgentID:    sessionPlan.AgentId,
 								Status:     pb.LedgerEntry_COMMITTED,
 								IntentHash: sessionPlan.ExpectedOutcomeHash,
 								ActualHash: "calculated-hash",
 							})
+							auditCancel()
 						}
 					} else {
-						log.Printf("HASH MISMATCH: %v", matchErr)
+						slog.Info("HASH MISMATCH", "match_err", matchErr)
 						action = "BLOCK_MISMATCH"
 						wg.verdictUpdater.RevokeProcess(ev.PID)
 
 						// --- PHASE 4: COMPENSATE ---
-						log.Println("Rolling back environmental changes...")
-						stack.Compensate(context.Background())
+						slog.Info("Rolling back environmental changes...")
+						compCtx, compCancel := context.WithTimeout(context.Background(), 5*time.Second)
+						stack.Compensate(compCtx)
+						compCancel()
 
 						// Log Rejection
-						wg.auditLogger.LogTurn(context.Background(), &ledger.TurnData{
+						rejectCtx, rejectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+						wg.auditLogger.LogTurn(rejectCtx, &ledger.TurnData{
 							TurnID:     stack.TurnID,
 							AgentID:    sessionPlan.AgentId,
 							Status:     pb.LedgerEntry_COMPENSATED,
 							IntentHash: sessionPlan.ExpectedOutcomeHash,
 							ActualHash: "calculated-hash-mismatch",
 						})
+						rejectCancel()
 					}
 				}
 			}
@@ -501,8 +504,7 @@ func (wg *WorkerGroup) worker(ctx context.Context) {
 			wg.socket.BroadcastToNamespace("/", "traffic_event", uiEvent)
 
 			// Logging
-			log.Printf("TRAFFIC: PID %d | Action: %s | Hash: %s", ev.PID, action, id.SHA256[:8])
-
+			slog.Info("TRAFFIC: PID | Action: | Hash", "p_i_d", ev.PID, "action", action, "s_h_a2568", id.SHA256[:8])
 			// Return the struct to our sync.Pool
 			eventPool.Put(ev)
 		}
@@ -528,7 +530,7 @@ func (wg *WorkerGroup) Submit(ev *Event) {
 		// Event accepted into the queue
 	default:
 		// BACKPRESSURE: Queue is full, drop packet to protect system
-		log.Println("WARNING: Drop packet (Jury too slow)")
+		slog.Info("WARNING: Drop packet (Jury too slow)")
 		eventPool.Put(ev)
 	}
 }

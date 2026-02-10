@@ -20,6 +20,9 @@ type JITEntitlementManager struct {
 	grants map[string]map[string]*Entitlement // agentID -> permission -> grant
 	logger *log.Logger
 
+	// Maximum TTL for any entitlement (configurable, default 1h)
+	maxTTL time.Duration
+
 	// Background cleanup
 	cleanupTicker *time.Ticker
 	stopCleanup   chan struct{}
@@ -62,12 +65,18 @@ type EntitlementEvent struct {
 }
 
 // NewJITEntitlementManager creates a manager with background cleanup.
-func NewJITEntitlementManager() *JITEntitlementManager {
+// maxTTL caps the maximum entitlement duration (0 = default 1 hour).
+func NewJITEntitlementManager(maxTTL ...time.Duration) *JITEntitlementManager {
+	cap := 1 * time.Hour
+	if len(maxTTL) > 0 && maxTTL[0] > 0 {
+		cap = maxTTL[0]
+	}
 	mgr := &JITEntitlementManager{
 		grants:        make(map[string]map[string]*Entitlement),
 		logger:        log.New(log.Writer(), "[JITEntitlements] ", log.LstdFlags),
 		cleanupTicker: time.NewTicker(10 * time.Second),
 		stopCleanup:   make(chan struct{}),
+		maxTTL:        cap,
 	}
 
 	go mgr.cleanupLoop()
@@ -95,10 +104,9 @@ func (jm *JITEntitlementManager) GrantEphemeral(
 	}
 
 	// Cap TTL to prevent indefinite permissions
-	const maxTTL = 1 * time.Hour
-	if ttl > maxTTL {
-		jm.logger.Printf("⚠️  TTL capped from %v to %v for agent %s", ttl, maxTTL, agentID)
-		ttl = maxTTL
+	if ttl > jm.maxTTL {
+		jm.logger.Printf("⚠️  TTL capped from %v to %v for agent %s", ttl, jm.maxTTL, agentID)
+		ttl = jm.maxTTL
 	}
 
 	now := time.Now()

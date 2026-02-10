@@ -11,9 +11,70 @@ import (
 // REPUTATION SYSTEM - Powers the weighted trust calculation
 // ============================================================================
 
+// ReputationManagerConfig holds all configurable thresholds and weights.
+// Previously these were hardcoded magic numbers scattered throughout the code.
+type ReputationManagerConfig struct {
+	// Trust weight formula: audit*W1 + reputation*W2 + attestation*W3 + history*W4
+	AuditWeight       float64 `yaml:"audit_weight"`       // default 0.40
+	ReputationWeight  float64 `yaml:"reputation_weight"`  // default 0.30
+	AttestationWeight float64 `yaml:"attestation_weight"` // default 0.20
+	HistoryWeight     float64 `yaml:"history_weight"`     // default 0.10
+
+	// Default score for unknown agents
+	DefaultNeutralScore float64 `yaml:"default_neutral_score"` // default 0.50
+
+	// Decay factors for old reputations
+	DecayOver1Year   float64 `yaml:"decay_over_1_year"`   // default 0.95
+	DecayOver3Months float64 `yaml:"decay_over_3_months"` // default 0.98
+
+	// Attestation freshness tiers (scores by age)
+	AttestationFresh1h float64 `yaml:"attestation_fresh_1h"` // default 1.0
+	AttestationFresh1d float64 `yaml:"attestation_fresh_1d"` // default 0.8
+	AttestationFresh7d float64 `yaml:"attestation_fresh_7d"` // default 0.6
+	AttestationStale   float64 `yaml:"attestation_stale"`    // default 0.4
+
+	// History age score tiers
+	HistoryAge1y  float64 `yaml:"history_age_1y"`  // default 1.0
+	HistoryAge3m  float64 `yaml:"history_age_3m"`  // default 0.8
+	HistoryAge1m  float64 `yaml:"history_age_1m"`  // default 0.6
+	HistoryAge1w  float64 `yaml:"history_age_1w"`  // default 0.4
+	HistoryAgeNew float64 `yaml:"history_age_new"` // default 0.2
+
+	// Interaction count bonus tiers
+	InteractionBonus1000 float64 `yaml:"interaction_bonus_1000"` // default 0.2
+	InteractionBonus100  float64 `yaml:"interaction_bonus_100"`  // default 0.1
+	InteractionBonus10   float64 `yaml:"interaction_bonus_10"`   // default 0.05
+}
+
+// DefaultReputationConfig returns sensible defaults matching the original hardcoded values.
+func DefaultReputationConfig() ReputationManagerConfig {
+	return ReputationManagerConfig{
+		AuditWeight:          0.40,
+		ReputationWeight:     0.30,
+		AttestationWeight:    0.20,
+		HistoryWeight:        0.10,
+		DefaultNeutralScore:  0.50,
+		DecayOver1Year:       0.95,
+		DecayOver3Months:     0.98,
+		AttestationFresh1h:   1.0,
+		AttestationFresh1d:   0.8,
+		AttestationFresh7d:   0.6,
+		AttestationStale:     0.4,
+		HistoryAge1y:         1.0,
+		HistoryAge3m:         0.8,
+		HistoryAge1m:         0.6,
+		HistoryAge1w:         0.4,
+		HistoryAgeNew:        0.2,
+		InteractionBonus1000: 0.2,
+		InteractionBonus100:  0.1,
+		InteractionBonus10:   0.05,
+	}
+}
+
 // ReputationManager manages reputation scores for agents with multi-tenant support
 type ReputationManager struct {
-	mu sync.RWMutex
+	mu  sync.RWMutex
+	cfg ReputationManagerConfig
 
 	// Agent reputations: "tenantID:agentID" -> reputation
 	reputations map[string]*AgentReputation
@@ -61,9 +122,15 @@ type AttestationRecord struct {
 	TrustLevel    float64
 }
 
-// NewReputationManager creates a new reputation manager
+// NewReputationManager creates a new reputation manager with defaults.
 func NewReputationManager() *ReputationManager {
+	return NewReputationManagerWithConfig(DefaultReputationConfig())
+}
+
+// NewReputationManagerWithConfig creates a reputation manager with explicit config.
+func NewReputationManagerWithConfig(cfg ReputationManagerConfig) *ReputationManager {
 	return &ReputationManager{
+		cfg:          cfg,
 		reputations:  make(map[string]*AgentReputation),
 		interactions: make(map[string]*InteractionRecord),
 		auditScores:  make(map[string]*AuditScore),
@@ -119,9 +186,9 @@ func (rm *ReputationManager) updateReputation(tenantID, agentID string, success 
 	age := time.Since(rep.FirstSeen)
 	decayFactor := 1.0
 	if age > 365*24*time.Hour { // > 1 year
-		decayFactor = 0.95
+		decayFactor = rm.cfg.DecayOver1Year
 	} else if age > 90*24*time.Hour { // > 3 months
-		decayFactor = 0.98
+		decayFactor = rm.cfg.DecayOver3Months
 	}
 
 	rep.ReputationScore = successRate * decayFactor
@@ -136,7 +203,7 @@ func (rm *ReputationManager) GetReputationScore(tenantID, agentID string) float6
 	key := fmt.Sprintf("%s:%s", tenantID, agentID)
 	rep, exists := rm.reputations[key]
 	if !exists {
-		return 0.5 // Default neutral reputation
+		return rm.cfg.DefaultNeutralScore
 	}
 
 	if rep.Blacklisted {
@@ -212,14 +279,14 @@ func (rm *ReputationManager) GetAttestationScore(tenantID, agentID string) float
 	age := time.Since(attestation.CreatedAt)
 
 	if age < 1*time.Hour {
-		return 1.0
+		return rm.cfg.AttestationFresh1h
 	} else if age < 24*time.Hour {
-		return 0.8
+		return rm.cfg.AttestationFresh1d
 	} else if age < 7*24*time.Hour {
-		return 0.6
+		return rm.cfg.AttestationFresh7d
 	}
 
-	return 0.4
+	return rm.cfg.AttestationStale
 }
 
 // GetHistoryScore returns the relationship history score for an agent in a specific tenant
@@ -237,27 +304,25 @@ func (rm *ReputationManager) GetHistoryScore(tenantID, agentID string) float64 {
 	age := time.Since(rep.FirstSeen)
 	interactionCount := rep.TotalInteractions
 
-	ageScore := 0.0
-	if age > 365*24*time.Hour { // > 1 year
-		ageScore = 1.0
-	} else if age > 90*24*time.Hour { // > 3 months
-		ageScore = 0.8
-	} else if age > 30*24*time.Hour { // > 1 month
-		ageScore = 0.6
-	} else if age > 7*24*time.Hour { // > 1 week
-		ageScore = 0.4
-	} else {
-		ageScore = 0.2
+	ageScore := rm.cfg.HistoryAgeNew
+	if age > 365*24*time.Hour {
+		ageScore = rm.cfg.HistoryAge1y
+	} else if age > 90*24*time.Hour {
+		ageScore = rm.cfg.HistoryAge3m
+	} else if age > 30*24*time.Hour {
+		ageScore = rm.cfg.HistoryAge1m
+	} else if age > 7*24*time.Hour {
+		ageScore = rm.cfg.HistoryAge1w
 	}
 
 	// Interaction count bonus
 	interactionBonus := 0.0
 	if interactionCount > 1000 {
-		interactionBonus = 0.2
+		interactionBonus = rm.cfg.InteractionBonus1000
 	} else if interactionCount > 100 {
-		interactionBonus = 0.1
+		interactionBonus = rm.cfg.InteractionBonus100
 	} else if interactionCount > 10 {
-		interactionBonus = 0.05
+		interactionBonus = rm.cfg.InteractionBonus10
 	}
 
 	score := ageScore + interactionBonus
@@ -280,11 +345,11 @@ func (rm *ReputationManager) CalculateWeightedTrust(tenantID, agentID string) fl
 	attestationScore := rm.getAttestationScoreUnsafe(tenantID, agentID)
 	historyScore := rm.getHistoryScoreUnsafe(tenantID, agentID)
 
-	// Weighted trust formula
-	trustLevel := (0.40 * auditScore) +
-		(0.30 * reputationScore) +
-		(0.20 * attestationScore) +
-		(0.10 * historyScore)
+	// Weighted trust formula — weights from config
+	trustLevel := (rm.cfg.AuditWeight * auditScore) +
+		(rm.cfg.ReputationWeight * reputationScore) +
+		(rm.cfg.AttestationWeight * attestationScore) +
+		(rm.cfg.HistoryWeight * historyScore)
 
 	return trustLevel
 }
@@ -303,7 +368,7 @@ func (rm *ReputationManager) getReputationScoreUnsafe(tenantID, agentID string) 
 	key := fmt.Sprintf("%s:%s", tenantID, agentID)
 	rep, exists := rm.reputations[key]
 	if !exists {
-		return 0.5
+		return rm.cfg.DefaultNeutralScore
 	}
 	if rep.Blacklisted {
 		return 0.0
@@ -320,13 +385,13 @@ func (rm *ReputationManager) getAttestationScoreUnsafe(tenantID, agentID string)
 
 	age := time.Since(attestation.CreatedAt)
 	if age < 1*time.Hour {
-		return 1.0
+		return rm.cfg.AttestationFresh1h
 	} else if age < 24*time.Hour {
-		return 0.8
+		return rm.cfg.AttestationFresh1d
 	} else if age < 7*24*time.Hour {
-		return 0.6
+		return rm.cfg.AttestationFresh7d
 	}
-	return 0.4
+	return rm.cfg.AttestationStale
 }
 
 func (rm *ReputationManager) getHistoryScoreUnsafe(tenantID, agentID string) float64 {
@@ -339,26 +404,24 @@ func (rm *ReputationManager) getHistoryScoreUnsafe(tenantID, agentID string) flo
 	age := time.Since(rep.FirstSeen)
 	interactionCount := rep.TotalInteractions
 
-	ageScore := 0.0
+	ageScore := rm.cfg.HistoryAgeNew
 	if age > 365*24*time.Hour {
-		ageScore = 1.0
+		ageScore = rm.cfg.HistoryAge1y
 	} else if age > 90*24*time.Hour {
-		ageScore = 0.8
+		ageScore = rm.cfg.HistoryAge3m
 	} else if age > 30*24*time.Hour {
-		ageScore = 0.6
+		ageScore = rm.cfg.HistoryAge1m
 	} else if age > 7*24*time.Hour {
-		ageScore = 0.4
-	} else {
-		ageScore = 0.2
+		ageScore = rm.cfg.HistoryAge1w
 	}
 
 	interactionBonus := 0.0
 	if interactionCount > 1000 {
-		interactionBonus = 0.2
+		interactionBonus = rm.cfg.InteractionBonus1000
 	} else if interactionCount > 100 {
-		interactionBonus = 0.1
+		interactionBonus = rm.cfg.InteractionBonus100
 	} else if interactionCount > 10 {
-		interactionBonus = 0.05
+		interactionBonus = rm.cfg.InteractionBonus10
 	}
 
 	score := ageScore + interactionBonus
@@ -406,10 +469,10 @@ func (rm *ReputationManager) GetTrustBreakdown(tenantID, agentID string) map[str
 	attestationScore := rm.getAttestationScoreUnsafe(tenantID, agentID)
 	historyScore := rm.getHistoryScoreUnsafe(tenantID, agentID)
 
-	trustLevel := (0.40 * auditScore) +
-		(0.30 * reputationScore) +
-		(0.20 * attestationScore) +
-		(0.10 * historyScore)
+	trustLevel := (rm.cfg.AuditWeight * auditScore) +
+		(rm.cfg.ReputationWeight * reputationScore) +
+		(rm.cfg.AttestationWeight * attestationScore) +
+		(rm.cfg.HistoryWeight * historyScore)
 
 	return map[string]float64{
 		"audit_score":        auditScore,
@@ -417,10 +480,10 @@ func (rm *ReputationManager) GetTrustBreakdown(tenantID, agentID string) map[str
 		"attestation_score":  attestationScore,
 		"history_score":      historyScore,
 		"trust_level":        trustLevel,
-		"audit_weight":       0.40 * auditScore,
-		"reputation_weight":  0.30 * reputationScore,
-		"attestation_weight": 0.20 * attestationScore,
-		"history_weight":     0.10 * historyScore,
+		"audit_weight":       rm.cfg.AuditWeight * auditScore,
+		"reputation_weight":  rm.cfg.ReputationWeight * reputationScore,
+		"attestation_weight": rm.cfg.AttestationWeight * attestationScore,
+		"history_weight":     rm.cfg.HistoryWeight * historyScore,
 	}
 }
 

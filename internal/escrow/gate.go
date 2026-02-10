@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"sync"
@@ -45,7 +45,7 @@ func NewEscrowGate(jury JuryClient, entropy EntropyMonitor) *EscrowGate {
 	entropyURL := os.Getenv("OCX_ENTROPY_URL")
 	if entropyURL == "" {
 		entropyURL = "http://localhost:8000" // Default for local dev only
-		log.Println("⚠️  OCX_ENTROPY_URL not set — using default http://localhost:8000")
+		slog.Info("OCX_ENTROPY_URL not set — using default http://localhost:8000")
 	}
 
 	return &EscrowGate{
@@ -129,8 +129,7 @@ func (g *EscrowGate) Hold(id, tenantID string, payload []byte) error {
 // triggerIdentityCheck validates the agent's identity credentials.
 // H3 FIX: This is the missing third factor in the Tri-Factor Gate.
 func (g *EscrowGate) triggerIdentityCheck(id, tenantID, agentID string) {
-	log.Printf("[EscrowGate] 🆔 Identity check for item %s, agent=%s, tenant=%s", id, agentID, tenantID)
-
+	slog.Info("[EscrowGate] Identity check for item , agent=, tenant", "id", id, "agent_i_d", agentID, "tenant_i_d", tenantID)
 	// Identity validation rules:
 	// 1. Agent must have a non-empty ID
 	// 2. Tenant must be valid (non-empty)
@@ -138,12 +137,12 @@ func (g *EscrowGate) triggerIdentityCheck(id, tenantID, agentID string) {
 
 	approved := true
 	if agentID == "" {
-		log.Printf("[EscrowGate] ⚠️  Identity check: empty agentID for %s — auto-approving for backwards compat", id)
+		slog.Info("[EscrowGate] Identity check: empty agentID for auto-approving for backwards compat", "id", id)
 		// Auto-approve for backwards compatibility with Hold() calls that don't pass agentID
 	}
 
 	if tenantID == "" || tenantID == "unknown" {
-		log.Printf("[EscrowGate] ❌ Identity REJECTED for item %s: invalid tenant '%s'", id, tenantID)
+		slog.Info("[EscrowGate] Identity REJECTED for item : invalid tenant ''", "id", id, "tenant_i_d", tenantID)
 		approved = false
 	}
 
@@ -158,15 +157,14 @@ func (g *EscrowGate) triggerIdentityCheck(id, tenantID, agentID string) {
 
 // triggerJuryCheck runs the Jury assessment asynchronously
 func (g *EscrowGate) triggerJuryCheck(id, tenantID string) {
-	log.Printf("[EscrowGate] ⚖️  Jury check for item %s, tenant=%s", id, tenantID)
-
+	slog.Info("[EscrowGate] Jury check for item , tenant", "id", id, "tenant_i_d", tenantID)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	result := g.jury.Assess(ctx, id, tenantID)
 	approved := result.Verdict == "ALLOW" || result.Verdict == "WARN"
 
-	log.Printf("[EscrowGate] Jury verdict for %s: %s (trust=%.3f)", id, result.Verdict, result.TrustLevel)
+	slog.Info("[EscrowGate] Jury verdict for : (trust=)", "id", id, "verdict", result.Verdict, "trust_level", result.TrustLevel)
 	g.ProcessSignal(id, "Jury", approved)
 }
 
@@ -179,19 +177,19 @@ func (g *EscrowGate) triggerEntropyCheck(id, tenantID string, payload []byte) {
 	}
 	body, err := json.Marshal(reqData)
 	if err != nil {
-		log.Printf("[EscrowGate] Failed to marshal entropy request for %s: %v", id, err)
+		slog.Warn("[EscrowGate] Failed to marshal entropy request for", "id", id, "error", err)
 		return
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Post(url, "application/json", bytes.NewBuffer(body))
 	if err != nil {
-		log.Printf("[EscrowGate] Entropy service unavailable at %s for item %s: %v", url, id, err)
+		slog.Info("[EscrowGate] Entropy service unavailable at for item", "url", url, "id", id, "error", err)
 		// H3 FIX: If entropy service is unavailable, use the mock entropy monitor
 		if g.entropy != nil {
 			result := g.entropy.Analyze(payload, tenantID)
 			approved := result.Verdict == "CLEAN"
-			log.Printf("[EscrowGate] Fallback entropy check for %s: verdict=%s, entropy=%.2f", id, result.Verdict, result.EntropyScore)
+			slog.Info("[EscrowGate] Fallback entropy check for : verdict=, entropy", "id", id, "verdict", result.Verdict, "entropy_score", result.EntropyScore)
 			g.ProcessSignal(id, "Entropy", approved)
 		}
 		return
@@ -203,14 +201,14 @@ func (g *EscrowGate) triggerEntropyCheck(id, tenantID string, payload []byte) {
 			Verdict string `json:"verdict"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			log.Printf("[EscrowGate] Failed to decode entropy response for %s: %v", id, err)
+			slog.Warn("[EscrowGate] Failed to decode entropy response for", "id", id, "error", err)
 			return
 		}
 
 		approved := result.Verdict == "CLEAN"
 		g.ProcessSignal(id, "Entropy", approved)
 	} else {
-		log.Printf("[EscrowGate] Entropy service returned status %d for item %s", resp.StatusCode, id)
+		slog.Info("[EscrowGate] Entropy service returned status for item", "status_code", resp.StatusCode, "id", id)
 	}
 }
 
@@ -227,7 +225,7 @@ func (g *EscrowGate) ProcessSignal(id, signalSource string, approved bool) ([]by
 
 	// If any signal is REJECT, we discard immediately
 	if !approved {
-		log.Printf("[EscrowGate] ❌ Signal %s REJECTED item %s — discarding", signalSource, id)
+		slog.Info("[EscrowGate] Signal REJECTED item discarding", "signal_source", signalSource, "id", id)
 		// H2 FIX: Notify any blocked AwaitRelease callers
 		if item.done != nil {
 			item.done <- releaseResult{
@@ -244,7 +242,7 @@ func (g *EscrowGate) ProcessSignal(id, signalSource string, approved bool) ([]by
 	// H3 FIX: TRI-FACTOR CHECK — requires all 3: Identity + Jury + Entropy
 	// Previously only checked Jury + Entropy (missing Identity)
 	if item.Signals["Identity"] && item.Signals["Jury"] && item.Signals["Entropy"] {
-		log.Printf("[EscrowGate] ✅ All 3 tri-factor signals received for %s — RELEASING", id)
+		slog.Info("[EscrowGate] All 3 tri-factor signals received for RELEASING", "id", id)
 		payload := item.Payload
 		// H2 FIX: Notify any blocked AwaitRelease callers
 		if item.done != nil {
@@ -259,8 +257,19 @@ func (g *EscrowGate) ProcessSignal(id, signalSource string, approved bool) ([]by
 	for sig := range item.Signals {
 		received = append(received, sig)
 	}
-	log.Printf("[EscrowGate] ⏳ Item %s: %d/3 signals received (%v)", id, len(item.Signals), received)
-
+	slog.Info("[EscrowGate] Item : /3 signals received", "id", id, "signals", len(item.Signals), "received", received)
 	// Still waiting
 	return nil, nil // No error, but no release yet
+}
+
+// ListHeld returns a snapshot of all currently held escrow items.
+func (g *EscrowGate) ListHeld() []*HeldItem {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	items := make([]*HeldItem, 0, len(g.holding))
+	for _, item := range g.holding {
+		items = append(items, item)
+	}
+	return items
 }

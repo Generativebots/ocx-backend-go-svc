@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package federation;
 
-option go_package = "github.com/ocx/backend/pb/federation";
+option go_package = "github.com/ocx/backend/pb";
 
 // ============================================================================
 // HANDSHAKE MESSAGES - Full 6-Step Inter-OCX Handshake Protocol

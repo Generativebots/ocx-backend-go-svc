@@ -2,11 +2,12 @@ package federation
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	pb "github.com/ocx/backend/pb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -17,7 +18,7 @@ import (
 
 // HandshakeServiceServer implements the InterOCXHandshakeService
 type HandshakeServiceServer struct {
-	// UnimplementedInterOCXHandshakeServiceServer
+	pb.UnimplementedInterOCXHandshakeServiceServer
 
 	// Active handshake sessions
 	sessions map[string]*HandshakeSession
@@ -46,12 +47,11 @@ func NewHandshakeServiceServer(localAgent *OCXInstance, ledger *TrustAttestation
 }
 
 // InitiateHandshake handles Step 1 (HELLO) and responds with Step 2 (CHALLENGE)
-func (s *HandshakeServiceServer) InitiateHandshake(ctx context.Context, hello *HandshakeHelloMessage) (*HandshakeChallengeMessage, error) {
-	log.Printf("📥 Received HELLO from %s (%s)", hello.InstanceID, hello.Organization)
-
+func (s *HandshakeServiceServer) InitiateHandshake(ctx context.Context, hello *pb.HandshakeHello) (*pb.HandshakeChallenge, error) {
+	slog.Info("Received HELLO from", "instance_id", hello.InstanceId, "organization", hello.Organization)
 	// Create remote agent from HELLO message
 	remoteAgent := &OCXInstance{
-		InstanceID:   hello.InstanceID,
+		InstanceID:   hello.InstanceId,
 		Organization: hello.Organization,
 		TrustDomain:  hello.Metadata["trust_domain"],
 		Region:       hello.Metadata["region"],
@@ -76,13 +76,12 @@ func (s *HandshakeServiceServer) InitiateHandshake(ctx context.Context, hello *H
 		return nil, status.Errorf(codes.Internal, "failed to generate challenge: %v", err)
 	}
 
-	log.Printf("📤 Sent CHALLENGE to %s (session=%s)", hello.InstanceID, session.sessionID)
-
+	slog.Info("Sent CHALLENGE to (session=)", "instance_id", hello.InstanceId, "session_i_d", session.sessionID)
 	return challenge, nil
 }
 
 // RespondToChallenge handles Step 3 (PROOF) and responds with Step 4 (VERIFY)
-func (s *HandshakeServiceServer) RespondToChallenge(ctx context.Context, proof *HandshakeProofMessage) (*HandshakeVerifyMessage, error) {
+func (s *HandshakeServiceServer) RespondToChallenge(ctx context.Context, proof *pb.HandshakeProof) (*pb.HandshakeVerify, error) {
 	// Find session by proof metadata (would need to add session_id to proof)
 	// For now, find the most recent session
 	s.mu.RLock()
@@ -99,8 +98,7 @@ func (s *HandshakeServiceServer) RespondToChallenge(ctx context.Context, proof *
 		return nil, status.Errorf(codes.NotFound, "no active handshake session found")
 	}
 
-	log.Printf("📥 Received PROOF (session=%s)", session.sessionID)
-
+	slog.Info("Received PROOF (session=)", "session_i_d", session.sessionID)
 	// Verify proof
 	if err := session.ReceiveProof(ctx, proof); err != nil {
 		return nil, status.Errorf(codes.Unauthenticated, "proof verification failed: %v", err)
@@ -112,13 +110,12 @@ func (s *HandshakeServiceServer) RespondToChallenge(ctx context.Context, proof *
 		return nil, status.Errorf(codes.Internal, "verification failed: %v", err)
 	}
 
-	log.Printf("📤 Sent VERIFY with trust_level=%.2f (session=%s)", verify.TrustLevel, session.sessionID)
-
+	slog.Info("Sent VERIFY with trust_level= (session=)", "trust_level", verify.TrustLevel, "session_i_d", session.sessionID)
 	return verify, nil
 }
 
 // ExchangeAttestation handles Step 5 (ATTESTATION) and responds with Step 6 (RESULT)
-func (s *HandshakeServiceServer) ExchangeAttestation(ctx context.Context, attestation *HandshakeAttestationMessage) (*HandshakeResultMessage, error) {
+func (s *HandshakeServiceServer) ExchangeAttestation(ctx context.Context, attestation *pb.HandshakeAttestation) (*pb.HandshakeResult, error) {
 	// Find session
 	sessionID := attestation.Metadata["session_id"]
 	s.mu.RLock()
@@ -129,8 +126,7 @@ func (s *HandshakeServiceServer) ExchangeAttestation(ctx context.Context, attest
 		return nil, status.Errorf(codes.NotFound, "session not found: %s", sessionID)
 	}
 
-	log.Printf("📥 Received ATTESTATION (session=%s)", sessionID)
-
+	slog.Info("Received ATTESTATION (session=)", "session_i_d", sessionID)
 	// Receive attestation
 	if err := session.ReceiveAttestation(ctx, attestation); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "attestation invalid: %v", err)
@@ -142,8 +138,7 @@ func (s *HandshakeServiceServer) ExchangeAttestation(ctx context.Context, attest
 		return nil, status.Errorf(codes.Internal, "failed to finalize handshake: %v", err)
 	}
 
-	log.Printf("📤 Sent RESULT: %s (session=%s)", result.Verdict, sessionID)
-
+	slog.Info("Sent RESULT: (session=)", "verdict", result.Verdict, "session_i_d", sessionID)
 	// Clean up session after some time
 	go s.cleanupSession(sessionID, 5*time.Minute)
 
@@ -151,12 +146,11 @@ func (s *HandshakeServiceServer) ExchangeAttestation(ctx context.Context, attest
 }
 
 // PerformHandshake handles the full bidirectional streaming handshake
-func (s *HandshakeServiceServer) PerformHandshake(stream HandshakeService_PerformHandshakeServer) error {
+func (s *HandshakeServiceServer) PerformHandshake(stream pb.InterOCXHandshakeService_PerformHandshakeServer) error {
 	ctx := stream.Context()
 	sessionID := uuid.New().String()
 
-	log.Printf("🔄 Starting streaming handshake (session=%s)", sessionID)
-
+	slog.Info("Starting streaming handshake (session=)", "session_i_d", sessionID)
 	for {
 		select {
 		case <-ctx.Done():
@@ -172,51 +166,51 @@ func (s *HandshakeServiceServer) PerformHandshake(stream HandshakeService_Perfor
 
 		// Process based on message type
 		switch m := msg.Message.(type) {
-		case *HandshakeMessageWrapper_Hello:
+		case *pb.HandshakeMessage_Hello:
 			// Respond with challenge
 			challenge, err := s.InitiateHandshake(ctx, m.Hello)
 			if err != nil {
 				return err
 			}
-			if err := stream.Send(&HandshakeMessageWrapper{
-				Message: &HandshakeMessageWrapper_Challenge{Challenge: challenge},
+			if err := stream.Send(&pb.HandshakeMessage{
+				Message: &pb.HandshakeMessage_Challenge{Challenge: challenge},
 			}); err != nil {
 				return err
 			}
 
-		case *HandshakeMessageWrapper_Proof:
+		case *pb.HandshakeMessage_Proof:
 			// Respond with verify
 			verify, err := s.RespondToChallenge(ctx, m.Proof)
 			if err != nil {
 				return err
 			}
-			if err := stream.Send(&HandshakeMessageWrapper{
-				Message: &HandshakeMessageWrapper_Verify{Verify: verify},
+			if err := stream.Send(&pb.HandshakeMessage{
+				Message: &pb.HandshakeMessage_Verify{Verify: verify},
 			}); err != nil {
 				return err
 			}
 
-		case *HandshakeMessageWrapper_Attestation:
+		case *pb.HandshakeMessage_Attestation:
 			// Respond with result
 			result, err := s.ExchangeAttestation(ctx, m.Attestation)
 			if err != nil {
 				return err
 			}
-			if err := stream.Send(&HandshakeMessageWrapper{
-				Message: &HandshakeMessageWrapper_Result{Result: result},
+			if err := stream.Send(&pb.HandshakeMessage{
+				Message: &pb.HandshakeMessage_Result{Result: result},
 			}); err != nil {
 				return err
 			}
 
 			// Handshake complete
-			log.Printf("✅ Streaming handshake complete: %s (session=%s)", result.Verdict, sessionID)
+			slog.Info("Streaming handshake complete: (session=)", "verdict", result.Verdict, "session_i_d", sessionID)
 			return nil
 		}
 	}
 }
 
 // GetHandshakeStatus returns the status of a handshake session
-func (s *HandshakeServiceServer) GetHandshakeStatus(ctx context.Context, req *HandshakeStatusRequest) (*HandshakeStateMessage, error) {
+func (s *HandshakeServiceServer) GetHandshakeStatus(ctx context.Context, req *pb.HandshakeStatusRequest) (*pb.HandshakeState, error) {
 	s.mu.RLock()
 	session, ok := s.sessions[req.SessionId]
 	s.mu.RUnlock()
@@ -225,11 +219,11 @@ func (s *HandshakeServiceServer) GetHandshakeStatus(ctx context.Context, req *Ha
 		return nil, status.Errorf(codes.NotFound, "session not found: %s", req.SessionId)
 	}
 
-	state := &HandshakeStateMessage{
+	state := &pb.HandshakeState{
 		SessionId:        session.sessionID,
 		LocalInstanceId:  session.localOCX.InstanceID,
 		RemoteInstanceId: session.remoteOCX.InstanceID,
-		CurrentState:     int32(session.stateMachine.GetCurrentState()),
+		CurrentState:     pb.HandshakeState_State(session.stateMachine.GetCurrentState()),
 		StartedAt:        session.stateMachine.GetStartTime().Unix(),
 		LastUpdatedAt:    session.stateMachine.GetLastUpdateTime().Unix(),
 		TimeoutAt:        session.stateMachine.GetStartTime().Add(3 * time.Minute).Unix(),
@@ -248,60 +242,5 @@ func (s *HandshakeServiceServer) cleanupSession(sessionID string, delay time.Dur
 	s.mu.Lock()
 	delete(s.sessions, sessionID)
 	s.mu.Unlock()
-	log.Printf("🗑️  Cleaned up session: %s", sessionID)
-}
-
-// ============================================================================
-// PLACEHOLDER TYPES (until protobuf is compiled)
-// ============================================================================
-
-type HandshakeService_PerformHandshakeServer interface {
-	Send(*HandshakeMessageWrapper) error
-	Recv() (*HandshakeMessageWrapper, error)
-	Context() context.Context
-}
-
-type HandshakeMessageWrapper struct {
-	Message interface{}
-}
-
-type HandshakeMessageWrapper_Hello struct {
-	Hello *HandshakeHelloMessage
-}
-
-type HandshakeMessageWrapper_Challenge struct {
-	Challenge *HandshakeChallengeMessage
-}
-
-type HandshakeMessageWrapper_Proof struct {
-	Proof *HandshakeProofMessage
-}
-
-type HandshakeMessageWrapper_Verify struct {
-	Verify *HandshakeVerifyMessage
-}
-
-type HandshakeMessageWrapper_Attestation struct {
-	Attestation *HandshakeAttestationMessage
-}
-
-type HandshakeMessageWrapper_Result struct {
-	Result *HandshakeResultMessage
-}
-
-type HandshakeStatusRequest struct {
-	SessionId string
-}
-
-type HandshakeStateMessage struct {
-	SessionId        string
-	LocalInstanceId  string
-	RemoteInstanceId string
-	CurrentState     int32
-	StartedAt        int64
-	LastUpdatedAt    int64
-	TimeoutAt        int64
-	Nonce            string
-	Challenge        []byte
-	Error            string
+	slog.Info("Cleaned up session", "session_i_d", sessionID)
 }

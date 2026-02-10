@@ -7,7 +7,7 @@ package sop
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"syscall"
@@ -58,7 +58,7 @@ func (iv *IdentityVerifier) VerifyRequest(r *http.Request) (string, error) {
 		return "", fmt.Errorf("identity mismatch: claimed=%s", claimedAgentID)
 	}
 
-	log.Printf("✅ Verified identity: PID=%d, AgentID=%s", pid, claimedAgentID)
+	slog.Info("Verified identity: PID=, AgentID", "pid", pid, "claimed_agent_i_d", claimedAgentID)
 	return claimedAgentID, nil
 }
 
@@ -91,7 +91,7 @@ func (iv *IdentityVerifier) Middleware(next http.Handler) http.Handler {
 		// Verify identity
 		agentID, err := iv.VerifyRequest(r)
 		if err != nil {
-			log.Printf("❌ Identity verification failed: %v", err)
+			slog.Warn("Identity verification failed", "error", err)
 			http.Error(w, "Unauthorized: Identity verification failed", http.StatusUnauthorized)
 			return
 		}

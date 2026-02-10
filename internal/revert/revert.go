@@ -3,7 +3,7 @@ package revert
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 )
 
 // UndoFunc is a closure that reverses a specific action
@@ -28,7 +28,7 @@ func (s *CompensationStack) Push(undo UndoFunc) {
 
 // Compensate executes the undo stack in reverse order (Last-In, First-Out)
 func (s *CompensationStack) Compensate(ctx context.Context) error {
-	log.Printf("Initiating compensation for Turn: %s", s.TurnID)
+	slog.Info("Initiating compensation for Turn", "turn_i_d", s.TurnID)
 	for i := len(s.ops) - 1; i >= 0; i-- {
 		if err := s.ops[i](ctx); err != nil {
 			return fmt.Errorf("compensation failed at step %d: %w", i, err)

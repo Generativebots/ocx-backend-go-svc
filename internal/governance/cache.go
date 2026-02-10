@@ -14,12 +14,6 @@ type GovernanceCache struct {
 	Store map[string]float64 // Map of [Action_Hash + Agent_ID] to Trust_Score
 }
 
-func NewGovernanceCache() *GovernanceCache {
-	return &GovernanceCache{
-		Store: make(map[string]float64),
-	}
-}
-
 func (c *GovernanceCache) Check(turn *pb.NegotiationTurn) (float64, bool) {
 	// Generate a hash of the 'Identity' + 'Payload Intent'
 	// This ignores variable data (like timestamps) and focuses on the LOGIC PATH
