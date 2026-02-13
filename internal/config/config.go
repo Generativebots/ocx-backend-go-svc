@@ -35,6 +35,7 @@ type Config struct {
 	CloudTasks CloudTasksConfig `yaml:"cloud_tasks"`
 	Security   SecurityConfig   `yaml:"security"`
 	Sovereign  SovereignConfig  `yaml:"sovereign"`
+	Redis      RedisConfig      `yaml:"redis"`
 }
 
 type ServerConfig struct {
@@ -187,6 +188,14 @@ type SovereignConfig struct {
 	Enabled                bool   `yaml:"enabled"`
 	LocalInferenceEndpoint string `yaml:"local_inference_endpoint"`
 	BoundaryEnforced       bool   `yaml:"boundary_enforced"`
+}
+
+// RedisConfig for Redis connection (hub store, event bus)
+type RedisConfig struct {
+	Addr     string `yaml:"addr"`
+	Password string `yaml:"password"`
+	DB       int    `yaml:"db"`
+	Enabled  bool   `yaml:"enabled"`
 }
 
 // ServicesConfig contains URLs for Python services
@@ -350,6 +359,14 @@ func (c *Config) applyEnvOverrides() {
 	c.Sovereign.LocalInferenceEndpoint = getEnv("OCX_LOCAL_INFERENCE_ENDPOINT", c.Sovereign.LocalInferenceEndpoint)
 	c.Sovereign.BoundaryEnforced = getEnvBool("OCX_BOUNDARY_ENFORCED", c.Sovereign.BoundaryEnforced)
 
+	// Redis
+	c.Redis.Addr = getEnv("OCX_REDIS_ADDR", c.Redis.Addr)
+	c.Redis.Password = getEnv("OCX_REDIS_PASSWORD", c.Redis.Password)
+	if v := getEnvInt("OCX_REDIS_DB", -1); v >= 0 {
+		c.Redis.DB = v
+	}
+	c.Redis.Enabled = getEnvBool("OCX_REDIS_ENABLED", c.Redis.Enabled)
+
 	// Apply defaults for zero values
 	c.applyDefaults()
 }
@@ -428,6 +445,10 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Security.AnomalyThreshold == 0 {
 		c.Security.AnomalyThreshold = 5
+	}
+	// Redis defaults
+	if c.Redis.Addr == "" {
+		c.Redis.Addr = "localhost:6379"
 	}
 }
 

@@ -62,6 +62,7 @@ trust:
 # -----------------------------------------------------------------------------
 handshake:
   session_expiry_minutes: 5
+  default_crypto_algorithm: "ed25519"   # ed25519 | ecdsa-p256 (tenant-overridable)
   supported_versions:
     - "1.0.0"
     - "1.1.0"
@@ -111,6 +112,38 @@ simulation:
 impact:
   monte_carlo_iterations: 1000
   confidence_level: 0.95
+
+# -----------------------------------------------------------------------------
+# Redis (Hub Store, Event Bus — multi-pod routing)
+# Disabled by default; enable for multi-instance Cloud Run deployments
+# -----------------------------------------------------------------------------
+redis:
+  addr: "${OCX_REDIS_ADDR:-localhost:6379}"
+  password: "${OCX_REDIS_PASSWORD:-}"
+  db: 0
+  enabled: false   # Set true (or OCX_REDIS_ENABLED=true) in production
+
+# -----------------------------------------------------------------------------
+# Security — Token Broker (Claim 7) + Continuous Access Evaluator (Claim 8)
+# IMPORTANT: Set OCX_HMAC_SECRET to a strong random value in production!
+# -----------------------------------------------------------------------------
+security:
+  hmac_secret: "${OCX_HMAC_SECRET:-change-me-in-production}"
+  token_ttl_sec: 300
+  min_trust_for_token: 0.65
+  max_tokens_per_agent: 50
+  cae_sweep_interval_sec: 10
+  drift_threshold: 0.20
+  trust_drop_limit: 0.15
+  anomaly_threshold: 5
+
+# -----------------------------------------------------------------------------
+# Sovereign Mode (Claim 12) — local-only operation
+# -----------------------------------------------------------------------------
+sovereign:
+  enabled: false
+  local_inference_endpoint: "${OCX_LOCAL_INFERENCE_ENDPOINT:-}"
+  boundary_enforced: false
 
 # -----------------------------------------------------------------------------
 # Python Service URLs (for Go → Python communication)

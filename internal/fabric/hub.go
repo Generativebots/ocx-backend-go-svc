@@ -126,6 +126,12 @@ type Hub struct {
 	// Metrics
 	metrics *HubMetrics
 
+	// Optional Redis-backed store for cross-pod spoke persistence
+	store *RedisHubStore
+
+	// Optional Redis-backed event bus for cross-pod event distribution
+	fabricEventBus *RedisEventBus
+
 	logger *log.Logger
 }
 
@@ -169,6 +175,21 @@ func NewHub(id HubID, region, namespace string) *Hub {
 		metrics:         &HubMetrics{},
 		logger:          log.New(log.Writer(), fmt.Sprintf("[Hub:%s] ", id), log.LstdFlags),
 	}
+}
+
+// SetStore injects a Redis-backed store for cross-pod spoke persistence.
+// When set, spoke registrations are persisted to Redis alongside in-memory maps.
+func (h *Hub) SetStore(s *RedisHubStore) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.store = s
+}
+
+// SetFabricEventBus injects a Redis-backed event bus for cross-pod event distribution.
+func (h *Hub) SetFabricEventBus(bus *RedisEventBus) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.fabricEventBus = bus
 }
 
 // ============================================================================

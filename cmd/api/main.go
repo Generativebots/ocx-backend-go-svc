@@ -22,10 +22,12 @@ import (
 	"github.com/ocx/backend/internal/evidence"
 	"github.com/ocx/backend/internal/fabric"
 	"github.com/ocx/backend/internal/federation"
+	"github.com/ocx/backend/internal/ghostpool"
 	"github.com/ocx/backend/internal/governance"
 	"github.com/ocx/backend/internal/gvisor"
 	"github.com/ocx/backend/internal/handlers"
 	"github.com/ocx/backend/internal/identity"
+	"github.com/ocx/backend/internal/infra"
 	"github.com/ocx/backend/internal/marketplace"
 	"github.com/ocx/backend/internal/middleware"
 	"github.com/ocx/backend/internal/multitenancy"
@@ -54,9 +56,45 @@ func main() {
 	hub := fabric.GetHub()
 	slog.Info("Hub initialized", "hub_id", hub.ID, "region", hub.Region)
 
+	// =========================================================================
+	// Redis Infrastructure — multi-pod Hub Store + Event Bus (graceful fallback)
+	// =========================================================================
+	var redisAdapter *infra.GoRedisAdapter
+	if cfg.Redis.Enabled {
+		adapter, err := infra.NewGoRedisAdapter(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
+		if err != nil {
+			slog.Warn("Redis connection failed, falling back to in-memory stores", "addr", cfg.Redis.Addr, "error", err)
+		} else {
+			redisAdapter = adapter
+			defer redisAdapter.Close()
+
+			// RedisHubStore — cross-pod spoke persistence
+			hubStore := fabric.NewRedisHubStore(redisAdapter, "ocx:hub:", 10*time.Minute)
+			hub.SetStore(hubStore)
+			slog.Info("RedisHubStore wired into Hub for cross-pod spoke discovery")
+
+			// RedisEventBus — cross-pod event distribution via Pub/Sub
+			redisEventBus := fabric.NewRedisEventBus(redisAdapter, "ocx:events:")
+			hub.SetFabricEventBus(redisEventBus)
+			defer redisEventBus.Close()
+			slog.Info("RedisEventBus wired into Hub for cross-pod event distribution")
+		}
+	} else {
+		slog.Info("Redis disabled (OCX_REDIS_ENABLED=false), using in-memory Hub store and event bus")
+	}
+
 	// Initialize Patent Components — all values from config
 	federationRegistry := federation.NewFederationRegistry()
 	trustLedger := federation.NewPersistentTrustLedger()
+
+	// SupabaseHandshakeStore — durable federation handshake sessions
+	if cfg.GetSupabaseURL() != "" && cfg.GetSupabaseKey() != "" {
+		handshakeStore := federation.NewSupabaseHandshakeStore(cfg.GetSupabaseURL(), cfg.GetSupabaseKey())
+		federationRegistry.SetHandshakeStore(handshakeStore)
+		slog.Info("SupabaseHandshakeStore wired into FederationRegistry")
+	} else {
+		slog.Warn("Supabase not configured, federation handshakes use in-memory store")
+	}
 	evidenceVault := evidence.NewEvidenceVault(evidence.VaultConfig{
 		RetentionDays: cfg.Evidence.RetentionDays,
 		Store:         evidence.NewSupabaseEvidenceStore(supabaseClient),
@@ -130,6 +168,15 @@ func main() {
 	rootfsPath := getEnvOrDefault("GVISOR_ROOTFS_PATH", "/var/lib/ocx/rootfs")
 	sandboxExecutor := gvisor.NewSandboxExecutor(runscPath, rootfsPath)
 	slog.Info("SandboxExecutor initialized", "claim", 1, "runsc_path", sandboxExecutor.RunscPath(), "available", sandboxExecutor.IsAvailable())
+
+	// §1 State Cloner — Redis-backed state snapshots for speculative execution
+	stateCloner := gvisor.NewStateCloner(cfg.Redis.Addr)
+	slog.Info("StateCloner initialized", "redis_addr", cfg.Redis.Addr)
+
+	// §1 GhostPool — pre-warmed sandbox container pool
+	poolImage := getEnvOrDefault("OCX_GHOST_IMAGE", "ocx-ghost-node:latest")
+	ghostPool := ghostpool.NewPoolManager(2, 5, poolImage)
+	slog.Info("GhostPool initialized", "min", 2, "max", 5, "image", poolImage)
 
 	// §9 Claim 9: Ghost State Engine — business-state sandbox
 	ghostEngine := governance.NewGhostStateEngine()
@@ -385,6 +432,20 @@ func main() {
 
 	// Compensation (§9)
 	api.HandleFunc("/compensation/pending", handlers.HandleCompensationPending(compensationStack)).Methods("GET")
+
+	// Tenant Settings
+	api.HandleFunc("/tenant/settings", handlers.HandleGetTenantSettings(supabaseClient)).Methods("GET")
+	api.HandleFunc("/tenant/settings/crypto", handlers.HandleUpdateTenantCryptoAlgorithm(supabaseClient)).Methods("PUT")
+
+	// Sandbox Status (§1 gVisor)
+	api.HandleFunc("/sandbox/status", handlers.HandleSandboxStatus(sandboxExecutor, ghostPool, stateCloner)).Methods("GET")
+
+	// HITL Routes — Patent Layer 4: Human-in-the-Loop Governance
+	api.HandleFunc("/hitl/decide", handlers.HandleHITLDecide(escrowGate, supabaseClient)).Methods("POST")
+	api.HandleFunc("/hitl/decisions", handlers.HandleHITLDecisions(supabaseClient)).Methods("GET")
+	api.HandleFunc("/hitl/metrics", handlers.HandleHITLMetrics(supabaseClient)).Methods("GET")
+	api.HandleFunc("/hitl/rlhc/clusters", handlers.HandleRLHCClusters(supabaseClient)).Methods("GET")
+	api.HandleFunc("/hitl/rlhc/promote", handlers.HandleRLHCPromote(supabaseClient)).Methods("POST")
 
 	// Agent Card — service discovery
 	router.HandleFunc("/.well-known/ocx-governance.json", handlers.HandleAgentCard()).Methods("GET")

@@ -3,8 +3,6 @@ package federation
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -32,6 +30,9 @@ type HandshakeSession struct {
 	nonce     string
 	challenge []byte
 
+	// Dual-algorithm crypto provider (Ed25519 or ECDSA P-256)
+	cryptoProvider CryptoProvider
+
 	// Ledger for attestation
 	ledger *TrustAttestationLedger
 
@@ -40,20 +41,27 @@ type HandshakeSession struct {
 	trustTax   float64
 	verdict    string
 
-	// Dev/test fallback key (when no SPIFFE agent)
+	// Dev/test fallback key (when no SPIFFE agent) - kept for backward compat
 	devKey *ecdsa.PrivateKey
 }
 
-// NewHandshakeSession creates a new 6-step handshake session
-func NewHandshakeSession(local, remote *OCXInstance, ledger *TrustAttestationLedger) *HandshakeSession {
+// NewHandshakeSession creates a new 6-step handshake session.
+// If provider is nil, a default Ed25519 provider is created.
+func NewHandshakeSession(local, remote *OCXInstance, ledger *TrustAttestationLedger, provider ...CryptoProvider) *HandshakeSession {
 	sessionID := uuid.New().String()
 
+	var cp CryptoProvider
+	if len(provider) > 0 && provider[0] != nil {
+		cp = provider[0]
+	}
+
 	return &HandshakeSession{
-		sessionID:    sessionID,
-		localOCX:     local,
-		remoteOCX:    remote,
-		ledger:       ledger,
-		stateMachine: NewHandshakeStateMachine(sessionID),
+		sessionID:      sessionID,
+		localOCX:       local,
+		remoteOCX:      remote,
+		ledger:         ledger,
+		cryptoProvider: cp,
+		stateMachine:   NewHandshakeStateMachine(sessionID),
 	}
 }
 
@@ -70,37 +78,45 @@ func (hs *HandshakeSession) SendHello(ctx context.Context) (*pb.HandshakeHello, 
 
 	// Get SPIFFE SVID for identity (nil-safe for dev/test environments)
 	var spiffeID string
-	var publicKeyObj *ecdsa.PublicKey
+	var publicKeyPEM string
+
 	if hs.localOCX.SPIFFESource != nil {
 		svid, err := hs.localOCX.SPIFFESource.GetX509SVID()
 		if err != nil {
 			hs.stateMachine.SetError(err)
 			return nil, fmt.Errorf("failed to get SPIFFE SVID: %w", err)
 		}
-		pk, ok := svid.PrivateKey.Public().(*ecdsa.PublicKey)
-		if !ok {
-			err := errors.New("not an ECDSA public key")
+
+		// Try to wrap the SPIFFE key in the appropriate provider
+		switch pk := svid.PrivateKey.(type) {
+		case *ecdsa.PrivateKey:
+			hs.cryptoProvider = NewECDSAProviderFromKey(pk)
+		default:
+			err := fmt.Errorf("unsupported SPIFFE key type: %T", svid.PrivateKey)
 			hs.stateMachine.SetError(err)
 			return nil, err
 		}
 		spiffeID = svid.ID.String()
-		publicKeyObj = pk
 	} else {
-		// Dev/test fallback: generate ephemeral ECDSA key
-		slog.Info("No SPIFFE source using dev-mode ephemeral key for", "instance_i_d", hs.localOCX.InstanceID)
-		devKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			hs.stateMachine.SetError(err)
-			return nil, fmt.Errorf("failed to generate dev key: %w", err)
+		// Dev/test fallback: use the session's crypto provider
+		if hs.cryptoProvider == nil {
+			// Default to Ed25519 if none was provided
+			provider, err := NewCryptoProvider(AlgorithmEd25519)
+			if err != nil {
+				hs.stateMachine.SetError(err)
+				return nil, fmt.Errorf("failed to create dev crypto provider: %w", err)
+			}
+			hs.cryptoProvider = provider
 		}
-		hs.devKey = devKey
+		slog.Info("No SPIFFE source, using crypto provider for",
+			"instance_id", hs.localOCX.InstanceID,
+			"algorithm", hs.cryptoProvider.Algorithm())
 		spiffeID = fmt.Sprintf("spiffe://dev/%s", hs.localOCX.InstanceID)
-		publicKeyObj = &devKey.PublicKey
 	}
 
-	// Use resolved public key
-
-	publicKeyPEM, err := EncodePublicKeyPEM(publicKeyObj)
+	// Encode public key from the provider
+	var err error
+	publicKeyPEM, err = hs.cryptoProvider.EncodePublicKeyPEM()
 	if err != nil {
 		hs.stateMachine.SetError(err)
 		return nil, err
@@ -122,6 +138,7 @@ func (hs *HandshakeSession) SendHello(ctx context.Context) (*pb.HandshakeHello, 
 		Metadata: map[string]string{
 			"region":       hs.localOCX.Region,
 			"trust_domain": hs.localOCX.TrustDomain,
+			"algorithm":    string(hs.cryptoProvider.Algorithm()),
 		},
 	}
 
@@ -228,33 +245,38 @@ func (hs *HandshakeSession) GenerateProof(ctx context.Context, agentID string) (
 		return nil, err
 	}
 
-	// Get signing key (SPIFFE SVID or dev fallback)
-	var privateKey *ecdsa.PrivateKey
-	if hs.localOCX.SPIFFESource != nil {
-		svid, err := hs.localOCX.SPIFFESource.GetX509SVID()
-		if err != nil {
+	// Ensure we have a crypto provider
+	if hs.cryptoProvider == nil {
+		// Try SPIFFE source
+		if hs.localOCX.SPIFFESource != nil {
+			svid, err := hs.localOCX.SPIFFESource.GetX509SVID()
+			if err != nil {
+				hs.stateMachine.SetError(err)
+				return nil, err
+			}
+			switch pk := svid.PrivateKey.(type) {
+			case *ecdsa.PrivateKey:
+				hs.cryptoProvider = NewECDSAProviderFromKey(pk)
+			default:
+				err := fmt.Errorf("unsupported SPIFFE key type: %T", svid.PrivateKey)
+				hs.stateMachine.SetError(err)
+				return nil, err
+			}
+		} else if hs.devKey != nil {
+			// Legacy fallback for old dev keys
+			hs.cryptoProvider = NewECDSAProviderFromKey(hs.devKey)
+		} else {
+			err := errors.New("no crypto provider, SPIFFE source, or dev key available")
 			hs.stateMachine.SetError(err)
 			return nil, err
 		}
-		pk, ok := svid.PrivateKey.(*ecdsa.PrivateKey)
-		if !ok {
-			err := errors.New("not an ECDSA private key")
-			hs.stateMachine.SetError(err)
-			return nil, err
-		}
-		privateKey = pk
-	} else if hs.devKey != nil {
-		privateKey = hs.devKey
-	} else {
-		err := errors.New("no SPIFFE source or dev key available")
-		hs.stateMachine.SetError(err)
-		return nil, err
 	}
 
-	proof, err := GenerateProof(hs.challenge, privateKey)
+	// Sign challenge using the crypto provider
+	proof, err := hs.cryptoProvider.Sign(hs.challenge)
 	if err != nil {
 		hs.stateMachine.SetError(err)
-		return nil, err
+		return nil, fmt.Errorf("failed to sign challenge: %w", err)
 	}
 
 	// Get audit hash (zero-knowledge proof)
@@ -276,16 +298,22 @@ func (hs *HandshakeSession) GenerateProof(ctx context.Context, agentID string) (
 		}
 	}
 
+	// Set proof type based on provider algorithm
+	proofType := "ECDSA-SHA256"
+	if hs.cryptoProvider.Algorithm() == AlgorithmEd25519 {
+		proofType = "Ed25519"
+	}
+
 	proofMsg := &pb.HandshakeProof{
 		Proof:            proof,
 		AuditHash:        []byte(auditHash),
-		Signature:        proof, // Same as proof for ECDSA
+		Signature:        proof,
 		CertificateChain: certChain,
 		Timestamp:        time.Now().Unix(),
-		ProofType:        "ECDSA-SHA256",
+		ProofType:        proofType,
 	}
 
-	slog.Info("📝 [STEP 3/6] PROOF generated and sent")
+	slog.Info("📝 [STEP 3/6] PROOF generated and sent", "algorithm", hs.cryptoProvider.Algorithm())
 	return proofMsg, nil
 }
 
@@ -296,23 +324,40 @@ func (hs *HandshakeSession) ReceiveProof(ctx context.Context, proof *pb.Handshak
 		return err
 	}
 
-	// Get remote SPIFFE SVID
-	remoteSVID, err := hs.remoteOCX.SPIFFESource.GetX509SVID()
-	if err != nil {
+	// Determine the remote's crypto provider
+	var remoteProvider CryptoProvider
+
+	if hs.remoteOCX.SPIFFESource != nil {
+		// Extract key from SPIFFE SVID
+		remoteSVID, err := hs.remoteOCX.SPIFFESource.GetX509SVID()
+		if err != nil {
+			hs.stateMachine.SetError(err)
+			return err
+		}
+
+		switch pk := remoteSVID.PrivateKey.(type) {
+		case *ecdsa.PrivateKey:
+			remoteProvider = NewECDSAProviderFromKey(pk)
+		default:
+			err := fmt.Errorf("unsupported remote SPIFFE key type: %T", remoteSVID.PrivateKey)
+			hs.stateMachine.SetError(err)
+			return err
+		}
+	} else if hs.cryptoProvider != nil {
+		// In dev/test, use the same provider type
+		remoteProvider = hs.cryptoProvider
+	} else {
+		err := errors.New("no remote crypto provider or SPIFFE source available")
 		hs.stateMachine.SetError(err)
 		return err
 	}
 
-	// Extract public key
-	publicKey, ok := remoteSVID.PrivateKey.Public().(*ecdsa.PublicKey)
-	if !ok {
-		err := errors.New("not an ECDSA public key")
-		hs.stateMachine.SetError(err)
-		return err
-	}
-
-	// Verify proof
-	valid, err := VerifyProof(proof.Proof, hs.challenge, publicKey)
+	// Verify proof using the provider
+	valid, err := remoteProvider.Verify(
+		remoteProvider.PublicKeyBytes(),
+		hs.challenge,
+		proof.Proof,
+	)
 	if err != nil {
 		hs.stateMachine.SetError(err)
 		return err
@@ -324,7 +369,7 @@ func (hs *HandshakeSession) ReceiveProof(ctx context.Context, proof *pb.Handshak
 		return err
 	}
 
-	slog.Info("✅ [STEP 3/6] PROOF verified successfully")
+	slog.Info("✅ [STEP 3/6] PROOF verified successfully", "algorithm", remoteProvider.Algorithm())
 	return nil
 }
 

@@ -112,10 +112,27 @@ func (tr *TaxRedistributor) calculateTaxPool(context.Context) (int64, error) {
 	return 5000, nil // Mock pool
 }
 
-// getEligibleAgents fetches agents eligible for rewards
-func (tr *TaxRedistributor) getEligibleAgents(_ context.Context) ([]AgentReputation, error) {
-	// TODO: Implement GetHighTrustAgents for different wallet backends
-	// For now, return empty (will be implemented when wallet interface is extended)
+// HighTrustAgentSource is an optional interface that wallet backends
+// can implement to provide agent discovery for tax redistribution.
+type HighTrustAgentSource interface {
+	GetHighTrustAgents(ctx context.Context, minTrust float64) ([]AgentReputation, error)
+}
+
+// getEligibleAgents fetches agents eligible for rewards.
+// If the wallet implements HighTrustAgentSource (e.g., SpannerWallet),
+// it delegates directly. Otherwise returns an empty set (no redistribution).
+func (tr *TaxRedistributor) getEligibleAgents(ctx context.Context) ([]AgentReputation, error) {
+	if src, ok := tr.wallet.(HighTrustAgentSource); ok {
+		agents, err := src.GetHighTrustAgents(ctx, tr.config.MinTrustScore)
+		if err != nil {
+			return nil, fmt.Errorf("GetHighTrustAgents: %w", err)
+		}
+		tr.logger.Printf("Found %d eligible agents (trust >= %.2f)", len(agents), tr.config.MinTrustScore)
+		return agents, nil
+	}
+
+	// Wallet backend does not support agent discovery — skip redistribution
+	tr.logger.Println("Wallet backend does not implement HighTrustAgentSource; skipping redistribution")
 	return []AgentReputation{}, nil
 }
 

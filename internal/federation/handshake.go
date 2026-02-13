@@ -159,7 +159,8 @@ func (o *OCXInstance) GetAuditHash(agentID string) (string, error) {
 
 // FederationRegistry maintains directory of trusted OCX instances
 type FederationRegistry struct {
-	instances map[string]*OCXInstance
+	instances      map[string]*OCXInstance
+	handshakeStore *SupabaseHandshakeStore // optional durable store
 }
 
 // NewFederationRegistry creates a new registry
@@ -167,6 +168,11 @@ func NewFederationRegistry() *FederationRegistry {
 	return &FederationRegistry{
 		instances: make(map[string]*OCXInstance),
 	}
+}
+
+// SetHandshakeStore injects a durable Supabase-backed handshake store.
+func (fr *FederationRegistry) SetHandshakeStore(s *SupabaseHandshakeStore) {
+	fr.handshakeStore = s
 }
 
 // Register adds an OCX instance to the federation

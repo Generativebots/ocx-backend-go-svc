@@ -4,7 +4,6 @@ package federation
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -64,30 +63,57 @@ type Attestation struct {
 	Metadata       map[string]interface{} `json:"metadata,omitempty"`
 }
 
-// Sign signs the attestation with the private key
-func (a *Attestation) Sign(privateKey ed25519.PrivateKey) error {
-	// Create canonical representation for signing
+// Sign signs the attestation using the given CryptoProvider.
+func (a *Attestation) Sign(provider CryptoProvider) error {
 	data, err := a.canonicalBytes()
 	if err != nil {
 		return err
 	}
 
-	a.Signature = ed25519.Sign(privateKey, data)
+	sig, err := provider.Sign(data)
+	if err != nil {
+		return fmt.Errorf("attestation sign failed: %w", err)
+	}
+	a.Signature = sig
 	return nil
 }
 
-// Verify verifies the attestation signature
-func (a *Attestation) Verify() bool {
-	if len(a.PublicKey) != ed25519.PublicKeySize {
-		return false
-	}
-
+// Verify verifies the attestation signature using the given CryptoProvider.
+// If provider is nil, verification is skipped (returns true) for backward
+// compatibility with scenarios where only the attestation fields are checked.
+func (a *Attestation) VerifyWith(provider CryptoProvider) bool {
 	data, err := a.canonicalBytes()
 	if err != nil {
 		return false
 	}
 
-	return ed25519.Verify(a.PublicKey, data, a.Signature)
+	valid, err := provider.Verify(a.PublicKey, data, a.Signature)
+	if err != nil {
+		return false
+	}
+	return valid
+}
+
+// Verify verifies the attestation signature. It auto-detects the algorithm
+// from the public key length: 32 bytes = Ed25519, otherwise tries ECDSA.
+// This preserves backward compatibility for callers that don't have a provider.
+func (a *Attestation) Verify() bool {
+	data, err := a.canonicalBytes()
+	if err != nil {
+		return false
+	}
+
+	// Try Ed25519 first (fixed 32-byte public key)
+	if len(a.PublicKey) == 32 {
+		provider := &Ed25519Provider{}
+		valid, err := provider.Verify(a.PublicKey, data, a.Signature)
+		return err == nil && valid
+	}
+
+	// Try ECDSA (DER-encoded public key)
+	provider := &ECDSAProvider{}
+	valid, err := provider.Verify(a.PublicKey, data, a.Signature)
+	return err == nil && valid
 }
 
 func (a *Attestation) canonicalBytes() ([]byte, error) {
@@ -191,8 +217,7 @@ type FederationManager struct {
 	instanceID OCXInstanceID
 	region     string
 	version    string
-	privateKey ed25519.PrivateKey
-	publicKey  ed25519.PublicKey
+	crypto     CryptoProvider // Dual-algorithm crypto (Ed25519 or ECDSA P-256)
 
 	peers        map[OCXInstanceID]*PeerConnection
 	pendingPeers map[OCXInstanceID]*PendingHandshake
@@ -222,28 +247,33 @@ type PendingHandshake struct {
 
 // FederationConfig holds federation manager configuration
 type FederationConfig struct {
-	InstanceID     OCXInstanceID
-	Region         string
-	Version        string
-	GovernanceHash string
-	Capabilities   []string
-	MaxPeers       int
+	InstanceID      OCXInstanceID
+	Region          string
+	Version         string
+	GovernanceHash  string
+	Capabilities    []string
+	MaxPeers        int
+	CryptoAlgorithm CryptoAlgorithm // ed25519 (default) or ecdsa-p256
 }
 
 // NewFederationManager creates a new federation manager
 func NewFederationManager(cfg FederationConfig) (*FederationManager, error) {
-	// Generate key pair
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	// Resolve algorithm — default to Ed25519
+	alg := cfg.CryptoAlgorithm
+	if alg == "" {
+		alg = DefaultCryptoAlgorithm
+	}
+
+	provider, err := NewCryptoProvider(alg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate key pair: %w", err)
+		return nil, fmt.Errorf("failed to create crypto provider: %w", err)
 	}
 
 	return &FederationManager{
 		instanceID:     cfg.InstanceID,
 		region:         cfg.Region,
 		version:        cfg.Version,
-		privateKey:     privateKey,
-		publicKey:      publicKey,
+		crypto:         provider,
 		peers:          make(map[OCXInstanceID]*PeerConnection),
 		pendingPeers:   make(map[OCXInstanceID]*PendingHandshake),
 		governanceHash: cfg.GovernanceHash,
@@ -259,7 +289,7 @@ func (fm *FederationManager) CreateAttestation(tenantCount, agentCount int) (*At
 		InstanceID:     fm.instanceID,
 		Region:         fm.region,
 		Version:        fm.version,
-		PublicKey:      fm.publicKey,
+		PublicKey:      fm.crypto.PublicKeyBytes(),
 		Capabilities:   fm.capabilities,
 		TenantCount:    tenantCount,
 		AgentCount:     agentCount,
@@ -268,7 +298,7 @@ func (fm *FederationManager) CreateAttestation(tenantCount, agentCount int) (*At
 		ValidUntil:     time.Now().Add(24 * time.Hour),
 	}
 
-	if err := attestation.Sign(fm.privateKey); err != nil {
+	if err := attestation.Sign(fm.crypto); err != nil {
 		return nil, err
 	}
 
@@ -381,8 +411,11 @@ func (fm *FederationManager) handleHello(msg *HandshakeMessage) (*HandshakeMessa
 }
 
 func (fm *FederationManager) handleChallenge(msg *HandshakeMessage) (*HandshakeMessage, error) {
-	// Sign the challenge with our private key
-	response := ed25519.Sign(fm.privateKey, msg.Challenge)
+	// Sign the challenge with our crypto provider
+	response, err := fm.crypto.Sign(msg.Challenge)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign challenge: %w", err)
+	}
 
 	return &HandshakeMessage{
 		Type:       HandshakeResponse,
@@ -402,8 +435,9 @@ func (fm *FederationManager) handleResponse(msg *HandshakeMessage) (*HandshakeMe
 		return nil, errors.New("no pending handshake for this peer")
 	}
 
-	// Verify the response signature
-	if !ed25519.Verify(pending.Attestation.PublicKey, pending.Challenge, msg.Response) {
+	// Verify the response signature using our crypto provider
+	valid, verifyErr := fm.crypto.Verify(pending.Attestation.PublicKey, pending.Challenge, msg.Response)
+	if verifyErr != nil || !valid {
 		delete(fm.pendingPeers, msg.InstanceID)
 		fm.mu.Unlock()
 		return &HandshakeMessage{
@@ -540,7 +574,7 @@ func (fm *FederationManager) SendMessage(ctx context.Context, msg *FederatedMess
 
 	// Sign the message
 	msgBytes, _ := json.Marshal(msg)
-	msg.Signature = ed25519.Sign(fm.privateKey, msgBytes)
+	msg.Signature, _ = fm.crypto.Sign(msgBytes)
 
 	peer.mu.Lock()
 	peer.MessagesSent++

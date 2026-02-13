@@ -6,6 +6,10 @@ tenants:
         reputation: 0.1
         attestation: 0.05
         history: 0.05
+    federation:
+      crypto_algorithm: "ecdsa-p256"    # FIPS-compliant for regulated tenants
   "tenant-b":
     handshake:
       session_expiry_minutes: 30
+    federation:
+      crypto_algorithm: "ed25519"       # Default high-performance

@@ -3,16 +3,9 @@ package ghostpool
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
-
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
 )
 
 // GhostContainer represents a recyclable sandbox instance.
@@ -31,17 +24,25 @@ type PoolManager struct {
 	minIdle     int
 	maxCapacity int
 	imageName   string
+	backend     PoolBackend // Pluggable container runtime (Docker, K8s, etc.)
 }
 
-// NewPoolManager initializes the pool and starts pre-warming.
+// NewPoolManager initializes the pool with a default DockerBackend("runsc") and starts pre-warming.
 func NewPoolManager(minIdle, maxCap int, image string) *PoolManager {
+	return NewPoolManagerWithBackend(minIdle, maxCap, image, NewDockerBackend("runsc"))
+}
+
+// NewPoolManagerWithBackend initializes the pool with an explicit PoolBackend.
+func NewPoolManagerWithBackend(minIdle, maxCap int, image string, backend PoolBackend) *PoolManager {
 	pm := &PoolManager{
 		available:   make(chan *GhostContainer, maxCap),
 		active:      make(map[string]*GhostContainer),
 		minIdle:     minIdle,
 		maxCapacity: maxCap,
 		imageName:   image,
+		backend:     backend,
 	}
+	slog.Info("PoolManager initialized", "backend", backend.Name(), "min_idle", minIdle, "max_capacity", maxCap)
 	// Start background maintainer
 	go pm.maintainPool()
 	return pm
@@ -86,39 +87,13 @@ func (pm *PoolManager) Put(c *GhostContainer) {
 	}()
 }
 
-// scrubContainer resets the environment using Docker Exec.
+// scrubContainer resets the environment via the backend.
 func (pm *PoolManager) scrubContainer(ctx context.Context, c *GhostContainer) error {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	// Execute cleanup script inside the container
+	_, err := pm.backend.ExecInContainer(ctx, c.ID, []string{"/bin/sh", "-c", "rm -rf /tmp/speculation/* && pkill -u ghostuser"})
 	if err != nil {
-		return err
+		return fmt.Errorf("scrub failed: %w", err)
 	}
-	defer cli.Close()
-
-	// 1. Wipe temporary speculative data
-	// We execute a cleanup script already present inside the Ghost image
-	execConfig := types.ExecConfig{
-		User:         "root",
-		AttachStdout: true,
-		AttachStderr: true,
-		Cmd:          []string{"/bin/sh", "-c", "rm -rf /tmp/speculation/* && pkill -u ghostuser"},
-	}
-
-	execID, err := cli.ContainerExecCreate(ctx, c.ID, execConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create scrub exec: %w", err)
-	}
-
-	err = cli.ContainerExecStart(ctx, execID.ID, types.ExecStartCheck{
-		Detach: false,
-		Tty:    false,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to start scrub: %w", err)
-	}
-
-	// 2. Optional: If using filesystem snapshots (Advanced)
-	// cli.ContainerCommit(...) or using a CoW volume reset
-
 	return nil
 }
 
@@ -149,113 +124,45 @@ func (pm *PoolManager) maintainPool() {
 
 func (pm *PoolManager) createContainer() {
 	ctx := context.Background()
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		slog.Warn("Error creating docker client", "error", err)
-		return
-	}
-	defer cli.Close()
 
-	// Use gVisor runtime if available, else default
-	// Load Quotas (In production, read from config/quotas.json)
-	// Enforcing: --cpus=1.0 --memory=512m
-	hostConfig := &container.HostConfig{
-		Runtime:        "runsc", // gVisor
-		NetworkMode:    "none",  // Network Jailing
-		ReadonlyRootfs: true,    // CoW enforcement
-		Resources: container.Resources{
-			NanoCPUs: 1000000000,        // 1.0 CPU
-			Memory:   512 * 1024 * 1024, // 512MB
-		},
-		Tmpfs: map[string]string{
-			"/tmp": "rw,noexec,nosuid,size=64m",
-		},
-	}
-
-	resp, err := cli.ContainerCreate(ctx, &container.Config{
-		Image: pm.imageName,
-		Tty:   false,
-		Cmd:   []string{"sleep", "infinity"}, // Keep alive
-	}, hostConfig, nil, nil, "")
+	containerID, err := pm.backend.CreateContainer(ctx, pm.imageName)
 	if err != nil {
-		slog.Warn("Failed to create ghost container", "error", err)
+		slog.Warn("Failed to create ghost container", "backend", pm.backend.Name(), "error", err)
 		return
 	}
 
-	if err := cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{}); err != nil {
-		slog.Warn("Failed to start ghost container", "error", err)
+	if err := pm.backend.StartContainer(ctx, containerID); err != nil {
+		slog.Warn("Failed to start ghost container", "backend", pm.backend.Name(), "error", err)
 		return
 	}
 
 	c := &GhostContainer{
-		ID:       resp.ID,
+		ID:       containerID,
 		LastUsed: time.Now(),
 	}
 
 	pm.available <- c
-	slog.Info("Ghost Container pre-warmed", "i_d12", resp.ID[:12])
+	if len(containerID) >= 12 {
+		slog.Info("Ghost Container pre-warmed", "backend", pm.backend.Name(), "id12", containerID[:12])
+	} else {
+		slog.Info("Ghost Container pre-warmed", "backend", pm.backend.Name(), "id", containerID)
+	}
 }
 
-// destroyContainer FORCEFULLY removes a container and its resources
+// destroyContainer removes a container and its resources via the backend.
 func (pm *PoolManager) destroyContainer(ctx context.Context, c *GhostContainer) {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		slog.Warn("Failed to create client for destroy", "error", err)
-		return
+	if err := pm.backend.RemoveContainer(ctx, c.ID); err != nil {
+		slog.Warn("Failed to remove container", "backend", pm.backend.Name(), "id", c.ID, "error", err)
 	}
-	defer cli.Close()
-
-	// Force remove container
-	if err := cli.ContainerRemove(ctx, c.ID, types.ContainerRemoveOptions{Force: true}); err != nil {
-		slog.Warn("Failed to force remove container", "i_d", c.ID, "error", err)
-	}
-
-	// Remove sandbox directory
-	dir := filepath.Join("/tmp", "ocx-sandboxes", c.ID)
-	os.RemoveAll(dir)
-
-	slog.Info("Cleaned up container resources", "i_d", c.ID)
+	slog.Info("Cleaned up container resources", "backend", pm.backend.Name(), "id", c.ID)
 }
 
-// ExecuteSpeculative runs a command inside a specific container (using runsc/docker exec)
+// ExecuteSpeculative runs a command inside a container via the backend.
 func (pm *PoolManager) ExecuteSpeculative(ctx context.Context, containerID string, cmd []string, payload []byte) ([]byte, error) {
-	// 1. Write payload to container (stdin or file)
-	// For simplicity, we pass it as an arg or echo it.
-	// In production, we'd CopyToContainer.
-
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	output, err := pm.backend.ExecInContainer(ctx, containerID, cmd)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("speculative exec via %s failed: %w", pm.backend.Name(), err)
 	}
-	defer cli.Close()
-
-	// 2. Prepare Exec
-	execConfig := types.ExecConfig{
-		User:         "ghostuser", // Drop privileges
-		AttachStdout: true,
-		AttachStderr: true,
-		Cmd:          cmd,
-		// Env: []string{fmt.Sprintf("PAYLOAD=%s", string(payload))},
-	}
-
-	execID, err := cli.ContainerExecCreate(ctx, containerID, execConfig)
-	if err != nil {
-		return nil, fmt.Errorf("exec create failed: %w", err)
-	}
-
-	// 3. Run and Attach
-	resp, err := cli.ContainerExecAttach(ctx, execID.ID, types.ExecStartCheck{})
-	if err != nil {
-		return nil, fmt.Errorf("exec attach failed: %w", err)
-	}
-	defer resp.Close()
-
-	// 4. Read Output
-	// resp.Reader holds stdout/stderr
-	// Docker multiplexes stdout/stderr, we need stdcopy or simple read for now
-	// Simplification for prototype:
-	output, _ := io.ReadAll(resp.Reader)
-
 	return output, nil
 }
 
@@ -274,3 +181,15 @@ func (pm *PoolManager) Stats() map[string]interface{} {
 		"min_idle":          pm.minIdle,
 	}
 }
+
+// MinSize returns the minimum idle container count for the pool.
+func (pm *PoolManager) MinSize() int { return pm.minIdle }
+
+// MaxSize returns the maximum pool capacity.
+func (pm *PoolManager) MaxSize() int { return pm.maxCapacity }
+
+// ImageName returns the Docker image used for ghost containers.
+func (pm *PoolManager) ImageName() string { return pm.imageName }
+
+// BackendName returns the name of the active pool backend (e.g. "docker-local/runsc").
+func (pm *PoolManager) BackendName() string { return pm.backend.Name() }

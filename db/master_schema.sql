@@ -205,6 +205,27 @@ CREATE TABLE IF NOT EXISTS handshake_sessions (
 CREATE INDEX IF NOT EXISTS idx_handshake_tenant ON handshake_sessions(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_handshake_state ON handshake_sessions(state);
 
+-- Federation Handshakes (used by SupabaseHandshakeStore for cross-OCX sessions)
+CREATE TABLE IF NOT EXISTS federation_handshakes (
+    session_id TEXT PRIMARY KEY,
+    initiator TEXT NOT NULL,
+    responder TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'PROPOSED',
+    CHECK (state IN ('PROPOSED', 'CHALLENGE_SENT', 'PROOF_SUBMITTED', 'COMPLETED', 'REJECTED', 'EXPIRED')),
+    challenge TEXT,
+    proof TEXT,
+    trust_level FLOAT DEFAULT 0.0,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_federation_hs_state ON federation_handshakes(state);
+CREATE INDEX IF NOT EXISTS idx_federation_hs_initiator ON federation_handshakes(initiator);
+CREATE INDEX IF NOT EXISTS idx_federation_hs_incomplete ON federation_handshakes(state)
+    WHERE state NOT IN ('COMPLETED', 'REJECTED', 'EXPIRED');
+
 -- =============================================================================
 -- SECTION 6: AGENT IDENTITIES (PID Mapping)
 -- =============================================================================
@@ -708,7 +729,48 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(is_active) WHERE is_active = TRUE;
 
 -- =============================================================================
--- SECTION 17: ROW LEVEL SECURITY
+-- SECTION 17: HITL (Human-in-the-Loop) — Patent Layer 4
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS hitl_decisions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       TEXT NOT NULL,
+    reviewer_id     TEXT NOT NULL,
+    escrow_id       TEXT,
+    transaction_id  TEXT,
+    agent_id        TEXT NOT NULL,
+    decision_type   TEXT NOT NULL CHECK (decision_type IN ('ALLOW_OVERRIDE','BLOCK_OVERRIDE','MODIFY_OUTPUT')),
+    original_verdict TEXT,
+    modified_payload JSONB,
+    reason          TEXT,
+    cost_multiplier REAL DEFAULT 10.0,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_hitl_decisions_tenant  ON hitl_decisions(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_hitl_decisions_agent   ON hitl_decisions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_hitl_decisions_created ON hitl_decisions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hitl_decisions_type    ON hitl_decisions(decision_type);
+
+CREATE TABLE IF NOT EXISTS rlhc_correction_clusters (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           TEXT NOT NULL,
+    cluster_name        TEXT NOT NULL,
+    pattern_type        TEXT NOT NULL CHECK (pattern_type IN ('ALLOW_PATTERN','BLOCK_PATTERN','MODIFY_PATTERN')),
+    trigger_conditions  JSONB NOT NULL,
+    correction_count    INT DEFAULT 1,
+    confidence_score    REAL DEFAULT 0.0,
+    status              TEXT DEFAULT 'DETECTED' CHECK (status IN ('DETECTED','REVIEWED','PROMOTED','REJECTED')),
+    promoted_policy_id  UUID,
+    first_seen          TIMESTAMPTZ DEFAULT NOW(),
+    last_seen           TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rlhc_clusters_tenant ON rlhc_correction_clusters(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_rlhc_clusters_status ON rlhc_correction_clusters(status);
+
+-- =============================================================================
+-- SECTION 18: ROW LEVEL SECURITY
 -- =============================================================================
 
 ALTER TABLE agents ENABLE ROW LEVEL SECURITY;
@@ -738,6 +800,17 @@ CREATE POLICY "Service role has full access to governance_ledger"
     ON governance_ledger FOR ALL
     USING (auth.role() = 'service_role');
 
+ALTER TABLE hitl_decisions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE rlhc_correction_clusters ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Service role has full access to hitl_decisions"
+    ON hitl_decisions FOR ALL
+    USING (auth.role() = 'service_role');
+
+CREATE POLICY "Service role has full access to rlhc_correction_clusters"
+    ON rlhc_correction_clusters FOR ALL
+    USING (auth.role() = 'service_role');
+
 -- =============================================================================
 -- SECTION 18: SAMPLE DATA
 -- =============================================================================
@@ -750,9 +823,9 @@ ON CONFLICT (tenant_id) DO NOTHING;
 -- =============================================================================
 -- MIGRATION COMPLETE!
 -- =============================================================================
--- Total Tables: 43
--- Indexes: 25
--- RLS Policies: 5
+-- Total Tables: 45
+-- Indexes: 31
+-- RLS Policies: 7
 -- =============================================================================
 
 SELECT 'OCX Master Database Schema Created Successfully!' as result;

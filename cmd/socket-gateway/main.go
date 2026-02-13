@@ -21,6 +21,7 @@ import (
 	"github.com/ocx/backend/internal/escrow"
 	"github.com/ocx/backend/internal/evidence"
 	"github.com/ocx/backend/internal/fabric"
+	"github.com/ocx/backend/internal/ghostpool"
 	"github.com/ocx/backend/internal/gvisor"
 	"github.com/ocx/backend/internal/protocol"
 	"github.com/ocx/backend/internal/reputation"
@@ -42,6 +43,7 @@ var (
 	evidenceVault      *evidence.EvidenceVault        // §6 Evidence Vault
 	aiParser           *protocol.UniversalAIParser    // Universal AI protocol parser
 	reputationWallet   *reputation.ReputationWallet   // Trust score lookup
+	ghostPool          *ghostpool.PoolManager         // Pre-warmed sandbox container pool
 )
 
 // SocketEvent matches the C struct in socket_filter.bpf.c
@@ -80,6 +82,15 @@ func main() {
 	}
 	sandboxExecutor = gvisor.NewSandboxExecutor(runscPath, rootfsPath)
 	slog.Info("SandboxExecutor initialized (runsc=)", "runsc_path", sandboxExecutor.RunscPath())
+
+	// 1b. GhostPool — pre-warmed sandbox containers (production scaling)
+	poolImage := os.Getenv("OCX_GHOST_IMAGE")
+	if poolImage == "" {
+		poolImage = "ocx-ghost-node:latest"
+	}
+	ghostPool = ghostpool.NewPoolManager(2, 5, poolImage)
+	slog.Info("GhostPool initialized", "min", 2, "max", 5, "image", poolImage)
+
 	// 2. State Cloner — connects to Redis for snapshot management
 	redisAddr := os.Getenv("OCX_REDIS_ADDR")
 	if redisAddr == "" {
@@ -454,6 +465,66 @@ func processSocketEvent(event *SocketEvent) {
 					slog.Info("Pipeline context cancelled for tx", "tx_i_d", txID)
 					compStack.Compensate(ctx)
 					return
+				}
+			}
+		}
+	}
+
+	// =========================================================================
+	// §1: Speculative gVisor Execution — Ghost-Turn containment (Patent Claim 1)
+	// Clones state, executes tool call in isolated sandbox, registers compensation.
+	// Runs only for Class B actions that survived Tri-Factor validation.
+	// =========================================================================
+	if sandboxExecutor != nil && classification != nil &&
+		classification.Classification.ActionClass == escrow.CLASS_B {
+
+		// 1. Clone state snapshot (Redis + DB) before speculative execution
+		snapshot, cloneErr := stateCloner.CloneState(ctx, txID, agentID)
+		if cloneErr != nil {
+			slog.Warn("State clone failed — skipping speculative execution", "error", cloneErr)
+		} else {
+			slog.Info("State snapshot created for speculative execution",
+				"snapshot_id", snapshot.SnapshotID,
+				"tx_id", txID)
+
+			// 2. Execute speculatively in gVisor sandbox
+			specPayload := &gvisor.ToolCallPayload{
+				TransactionID: txID,
+				AgentID:       agentID,
+				ToolName:      toolID,
+				Parameters:    map[string]interface{}{"payload_len": event.PayloadLen},
+				Context:       map[string]interface{}{"tenant_id": tenantID},
+			}
+			specResult, specErr := sandboxExecutor.ExecuteSpeculative(ctx, specPayload)
+			if specErr != nil {
+				slog.Warn("Speculative execution failed — reverting state", "error", specErr)
+				if revertErr := stateCloner.RevertState(ctx, snapshot.RevertToken); revertErr != nil {
+					slog.Error("State revert also failed", "error", revertErr)
+				}
+			} else {
+				slog.Info("Speculative execution completed",
+					"success", specResult.Success,
+					"revert_token", specResult.RevertToken,
+					"execution_time", specResult.ExecutionTime)
+
+				// 3. Register compensation — revert snapshot on downstream failure
+				capturedRevertToken := snapshot.RevertToken
+				compStack.Push(func(ctx context.Context) error {
+					slog.Info("Compensating: reverting speculative state", "revert_token", capturedRevertToken)
+					return stateCloner.RevertState(ctx, capturedRevertToken)
+				})
+
+				// 4. If DB state manager available, create savepoint
+				if dbStateManager != nil {
+					tx, spErr := dbStateManager.CreateSavepoint(ctx, txID)
+					if spErr != nil {
+						slog.Warn("DB savepoint creation failed", "error", spErr)
+					} else {
+						capturedTx := tx
+						compStack.Push(func(ctx context.Context) error {
+							return dbStateManager.RollbackToSavepoint(ctx, capturedTx, txID)
+						})
+					}
 				}
 			}
 		}

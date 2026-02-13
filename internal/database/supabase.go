@@ -556,6 +556,20 @@ func (sc *SupabaseClient) GetTenant(ctx context.Context, tenantID string) (*Tena
 	return &tenants[0], nil
 }
 
+// UpdateTenantSettings updates the settings JSONB column for a tenant.
+// The caller provides the full settings map which replaces the existing value.
+func (sc *SupabaseClient) UpdateTenantSettings(ctx context.Context, tenantID string, settings map[string]interface{}) error {
+	update := map[string]interface{}{
+		"settings": settings,
+	}
+	var result []Tenant
+	_, err := sc.client.From("tenants").
+		Update(update, "", "").
+		Eq("tenant_id", tenantID).
+		ExecuteTo(&result)
+	return err
+}
+
 // GetTenantFeatures retrieves all features for a tenant
 func (sc *SupabaseClient) GetTenantFeatures(ctx context.Context, tenantID string) ([]TenantFeature, error) {
 	var features []TenantFeature

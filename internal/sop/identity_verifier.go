@@ -8,9 +8,10 @@ package sop
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"runtime"
 	"strconv"
-	"syscall"
 
 	"github.com/ocx/backend/internal/identity"
 )
@@ -58,28 +59,51 @@ func (iv *IdentityVerifier) VerifyRequest(r *http.Request) (string, error) {
 		return "", fmt.Errorf("identity mismatch: claimed=%s", claimedAgentID)
 	}
 
-	slog.Info("Verified identity: PID=, AgentID", "pid", pid, "claimed_agent_i_d", claimedAgentID)
+	slog.Info("Verified identity", "pid", pid, "agent_id", claimedAgentID)
 	return claimedAgentID, nil
 }
 
-// GetPIDFromSocket gets PID from socket connection
-// This would use eBPF socket tracking in production
-func (iv *IdentityVerifier) GetPIDFromSocket(conn interface{}) (uint32, error) {
-	// In production, use eBPF map to lookup PID from socket
-	// For now, placeholder
-	return 0, fmt.Errorf("not implemented")
+// GetPIDFromSocket gets PID from socket connection using cross-platform
+// system calls. On Linux, uses SO_PEERCRED; on macOS, uses LOCAL_PEERPID.
+func (iv *IdentityVerifier) GetPIDFromSocket(conn net.Conn) (uint32, error) {
+	tcpConn, ok := conn.(*net.TCPConn)
+	if !ok {
+		return 0, fmt.Errorf("connection is not TCP, cannot resolve PID")
+	}
+
+	rawConn, err := tcpConn.SyscallConn()
+	if err != nil {
+		return 0, fmt.Errorf("cannot get raw connection: %w", err)
+	}
+
+	var pid uint32
+	var controlErr error
+
+	err = rawConn.Control(func(fd uintptr) {
+		pid, controlErr = getPIDFromFD(fd)
+	})
+
+	if err != nil {
+		return 0, fmt.Errorf("rawConn.Control failed: %w", err)
+	}
+	if controlErr != nil {
+		return 0, fmt.Errorf("getPIDFromFD failed: %w", controlErr)
+	}
+
+	slog.Debug("Resolved PID from socket", "pid", pid, "platform", runtime.GOOS)
+	return pid, nil
 }
 
 // EnrichRequestWithIdentity adds identity information to request
 func (iv *IdentityVerifier) EnrichRequestWithIdentity(r *http.Request, pid uint32) error {
-	identity, err := iv.mapper.GetIdentity(pid)
+	ident, err := iv.mapper.GetIdentity(pid)
 	if err != nil {
 		return err
 	}
 
 	// Add identity headers
-	r.Header.Set("X-OCX-Agent-ID", identity.AgentID)
-	r.Header.Set("X-OCX-Trust-Level", fmt.Sprintf("%.2f", float64(identity.TrustLevel)/100))
+	r.Header.Set("X-OCX-Agent-ID", ident.AgentID)
+	r.Header.Set("X-OCX-Trust-Level", fmt.Sprintf("%.2f", float64(ident.TrustLevel)/100))
 	r.Header.Set("X-OCX-PID", fmt.Sprintf("%d", pid))
 
 	return nil
@@ -102,44 +126,4 @@ func (iv *IdentityVerifier) Middleware(next http.Handler) http.Handler {
 		// Continue
 		next.ServeHTTP(w, r)
 	})
-}
-
-// GetPIDFromConnection extracts PID from TCP connection using SO_PEERCRED (Linux only)
-// On macOS, this functionality requires different syscalls
-func GetPIDFromConnection(conn syscall.Conn) (uint32, error) {
-	// TODO: This is Linux-specific and requires build tags
-	// For cross-platform support, use conditional compilation:
-	// - identity_verifier_linux.go with SO_PEERCRED
-	// - identity_verifier_darwin.go with LOCAL_PEERPID
-
-	// For now, return not implemented on non-Linux platforms
-	return 0, fmt.Errorf("GetPIDFromConnection not implemented on this platform")
-
-	/* Linux implementation (requires //go:build linux):
-	rawConn, err := conn.SyscallConn()
-	if err != nil {
-		return 0, err
-	}
-
-	var pid uint32
-	var sockErr error
-
-	err = rawConn.Control(func(fd uintptr) {
-		ucred, err := syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
-		if err != nil {
-			sockErr = err
-			return
-		}
-		pid = uint32(ucred.Pid)
-	})
-
-	if err != nil {
-		return 0, err
-	}
-	if sockErr != nil {
-		return 0, sockErr
-	}
-
-	return pid, nil
-	*/
 }

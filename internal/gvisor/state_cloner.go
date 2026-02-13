@@ -229,3 +229,15 @@ func (sc *StateCloner) CleanupExpiredSnapshots(ctx context.Context) error {
 
 	return nil
 }
+
+// Ping checks Redis connectivity. Returns true if the server responds.
+func (sc *StateCloner) Ping() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return sc.redisClient.Ping(ctx).Err() == nil
+}
+
+// RedisAddr returns the configured Redis address.
+func (sc *StateCloner) RedisAddr() string {
+	return sc.redisClient.Options().Addr
+}
