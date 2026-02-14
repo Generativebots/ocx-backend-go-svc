@@ -15,6 +15,11 @@ server:
   port: "${PORT:-8080}"
   env: "${OCX_ENV:-development}"
   interface: "${OCX_INTERFACE:-eth0}"
+  cors_allow_origins:
+    - "http://localhost:3000"          # Next.js dev server
+    - "http://localhost:8080"          # Local gateway / direct backend
+    - "https://*.run.app"             # Cloud Run services
+    - "${GATEWAY_ORIGIN:-*}"          # API Gateway domain (set in prod)
 
 # -----------------------------------------------------------------------------
 # Database Configuration (Supabase)

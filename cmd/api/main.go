@@ -309,6 +309,9 @@ func main() {
 
 	slog.Info("Connectors initialized", "webhooks", 0, "plugins", pluginRegistry.Count(), "tools", toolCatalog.Count())
 
+	// Session Audit Logger — security forensics
+	sessionAuditor := security.NewSessionAuditor(supabaseClient)
+
 	// =========================================================================
 	// Router Setup
 	// =========================================================================
@@ -399,7 +402,7 @@ func main() {
 		jitEntitlements, evidenceVault, repWallet, toolCatalog,
 		webhookEmitter, eventEmitter, compensationStack,
 		tokenBroker, continuousEval, sandboxExecutor, ghostEngine,
-		sopManager,
+		sopManager, sessionAuditor,
 	)).Methods("POST")
 
 	// Bail-Out API (Patent Claims 6 + 14)
@@ -432,6 +435,18 @@ func main() {
 
 	// Compensation (§9)
 	api.HandleFunc("/compensation/pending", handlers.HandleCompensationPending(compensationStack)).Methods("GET")
+
+	// Continuous Access Evaluation (Patent Claim 8)
+	api.HandleFunc("/cae/sessions", handlers.HandleCAESessions(continuousEval)).Methods("GET")
+	api.HandleFunc("/cae/stats", handlers.HandleCAEStats(continuousEval)).Methods("GET")
+
+	// Session Audit Log (Security Forensics)
+	api.HandleFunc("/sessions/audit", handlers.HandleSessionAuditLogs(supabaseClient)).Methods("GET")
+
+	// Enriched Agent Profiles
+	api.HandleFunc("/agents/registry", handlers.HandleListAgents(supabaseClient)).Methods("GET")
+	api.HandleFunc("/agents/{agentId}/profile", handlers.HandleGetAgent(supabaseClient)).Methods("GET")
+	api.HandleFunc("/agents/{agentId}/profile", handlers.HandleUpdateAgent(supabaseClient)).Methods("PUT")
 
 	// Tenant Settings
 	api.HandleFunc("/tenant/settings", handlers.HandleGetTenantSettings(supabaseClient)).Methods("GET")

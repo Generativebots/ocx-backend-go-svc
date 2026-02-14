@@ -260,14 +260,67 @@ func (cae *ContinuousAccessEvaluator) GetSessionCount() int {
 	return len(cae.sessions)
 }
 
+// SessionSnapshot is a serializable view of a session for the REST API.
+type SessionSnapshot struct {
+	TokenID      string  `json:"token_id"`
+	AgentID      string  `json:"agent_id"`
+	TenantID     string  `json:"tenant_id"`
+	TrustAtIssue float64 `json:"trust_at_issue"`
+	CurrentTrust float64 `json:"current_trust"`
+	DriftPct     float64 `json:"drift_pct"`
+	AnomalyCount int     `json:"anomaly_count"`
+	DriftScore   float64 `json:"drift_score"`
+	RequestCount int     `json:"request_count"`
+	LastActivity string  `json:"last_activity"`
+	Status       string  `json:"status"` // "healthy", "warning", "critical"
+}
+
+// GetSessions returns all active sessions as serializable snapshots.
+func (cae *ContinuousAccessEvaluator) GetSessions() []SessionSnapshot {
+	cae.mu.RLock()
+	defer cae.mu.RUnlock()
+
+	snapshots := make([]SessionSnapshot, 0, len(cae.sessions))
+	for _, s := range cae.sessions {
+		driftPct := 0.0
+		if s.TrustAtIssue > 0 {
+			driftPct = (s.TrustAtIssue - s.CurrentTrust) / s.TrustAtIssue * 100
+		}
+
+		status := "healthy"
+		if s.AnomalyCount >= cae.config.AnomalyThreshold-1 || driftPct > cae.config.DriftThreshold*100*0.8 {
+			status = "critical"
+		} else if s.AnomalyCount > 0 || driftPct > cae.config.DriftThreshold*100*0.5 {
+			status = "warning"
+		}
+
+		snapshots = append(snapshots, SessionSnapshot{
+			TokenID:      s.TokenID,
+			AgentID:      s.AgentID,
+			TenantID:     s.TenantID,
+			TrustAtIssue: s.TrustAtIssue,
+			CurrentTrust: s.CurrentTrust,
+			DriftPct:     driftPct,
+			AnomalyCount: s.AnomalyCount,
+			DriftScore:   s.DriftScore,
+			RequestCount: s.RequestCount,
+			LastActivity: s.LastActivity.Format("2006-01-02T15:04:05Z"),
+			Status:       status,
+		})
+	}
+	return snapshots
+}
+
 // GetStats returns evaluator statistics.
 func (cae *ContinuousAccessEvaluator) GetStats() map[string]interface{} {
 	cae.mu.RLock()
 	defer cae.mu.RUnlock()
 	return map[string]interface{}{
-		"active_sessions":    len(cae.sessions),
-		"sweep_interval_sec": cae.config.SweepInterval.Seconds(),
-		"drift_threshold":    cae.config.DriftThreshold,
-		"anomaly_threshold":  cae.config.AnomalyThreshold,
+		"active_sessions":        len(cae.sessions),
+		"sweep_interval_sec":     cae.config.SweepInterval.Seconds(),
+		"drift_threshold":        cae.config.DriftThreshold,
+		"anomaly_threshold":      cae.config.AnomalyThreshold,
+		"inactivity_timeout_sec": cae.config.InactivityTimeout.Seconds(),
+		"trust_drop_limit":       cae.config.TrustDropLimit,
 	}
 }

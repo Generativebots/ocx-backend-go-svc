@@ -43,6 +43,7 @@ func HandleGovern(
 	sandbox *gvisor.SandboxExecutor,
 	ghostEngine *governance.GhostStateEngine,
 	sopManager *plan.SOPGraphManager,
+	auditor *security.SessionAuditor,
 ) http.HandlerFunc {
 	// Configurable timeout — defaults to 60 seconds if not set in config
 	timeoutSec := cfg.Contracts.RuntimeTimeoutMs / 1000
@@ -361,6 +362,23 @@ func HandleGovern(
 		}
 		if wd != nil {
 			wd.Emit(webhooks.EventType(eventType), req.TenantID, eventData)
+		}
+
+		// Step 7b: Session Audit Log — security forensics
+		if auditor != nil {
+			tokenID := ""
+			if tokenResponse != nil {
+				tokenID = tokenResponse.TokenID
+			}
+			auditor.LogFromRequest(r, txID, req.TenantID, req.AgentID,
+				"GOVERN", verdict, trustScore,
+				map[string]interface{}{
+					"tool_name":    req.ToolName,
+					"action_class": actionClass,
+					"token_id":     tokenID,
+					"protocol":     req.Protocol,
+				},
+			)
 		}
 
 		// Step 8 (§9): Compensation — execute or clear based on verdict

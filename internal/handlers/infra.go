@@ -84,13 +84,66 @@ func GetHubMetrics(hub *fabric.Hub) http.HandlerFunc {
 }
 
 // MakeCORSMiddleware returns CORS middleware using config origins.
+// Properly handles multiple allowed origins by matching against the request's
+// Origin header, which is the only spec-compliant approach.
+// Supports wildcard patterns (e.g. "https://*.run.app") by suffix matching.
 func MakeCORSMiddleware(cfg *config.Config) mux.MiddlewareFunc {
+	// Separate exact origins from wildcard patterns
+	exact := make(map[string]bool, len(cfg.Server.CORSAllowOrigins))
+	var wildcardSuffixes []string
+	allowAll := false
+	for _, o := range cfg.Server.CORSAllowOrigins {
+		if o == "*" {
+			allowAll = true
+		} else if strings.Contains(o, "*") {
+			// Convert "https://*.run.app" → suffix ".run.app" with scheme "https://"
+			// This handles the common *.domain pattern.
+			suffix := strings.Replace(o, "*", "", 1)
+			wildcardSuffixes = append(wildcardSuffixes, suffix)
+		} else {
+			exact[o] = true
+		}
+	}
+
+	// originAllowed checks whether the request origin is permitted.
+	originAllowed := func(origin string) bool {
+		if exact[origin] {
+			return true
+		}
+		for _, suffix := range wildcardSuffixes {
+			// suffix is e.g. "https://.run.app"
+			// Split into scheme and domain suffix
+			parts := strings.SplitN(suffix, "//", 2)
+			if len(parts) == 2 {
+				scheme := parts[0] + "//"
+				domainSuffix := parts[1]
+				if strings.HasPrefix(origin, scheme) && strings.HasSuffix(origin, domainSuffix) {
+					return true
+				}
+			} else if strings.HasSuffix(origin, suffix) {
+				return true
+			}
+		}
+		return false
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			origin := strings.Join(cfg.Server.CORSAllowOrigins, ", ")
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Tenant-ID")
+			origin := r.Header.Get("Origin")
+
+			// Determine what to set as Access-Control-Allow-Origin
+			if allowAll {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else if origin != "" && originAllowed(origin) {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				// Vary must be set when the response depends on the Origin header
+				w.Header().Set("Vary", "Origin")
+			}
+
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers",
+				"Content-Type, Authorization, X-Tenant-ID, X-API-Key, X-Request-ID, Accept")
+			w.Header().Set("Access-Control-Max-Age", "86400")
 
 			if r.Method == "OPTIONS" {
 				w.WriteHeader(http.StatusOK)

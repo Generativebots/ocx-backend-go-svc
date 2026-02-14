@@ -812,7 +812,66 @@ CREATE POLICY "Service role has full access to rlhc_correction_clusters"
     USING (auth.role() = 'service_role');
 
 -- =============================================================================
--- SECTION 18: SAMPLE DATA
+-- SECTION 18A: SESSION AUDIT LOG (Security Forensics)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS session_audit_log (
+    log_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id     TEXT NOT NULL,
+    tenant_id      TEXT NOT NULL,
+    agent_id       TEXT NOT NULL,
+    event_type     TEXT NOT NULL,
+    ip_address     TEXT,
+    user_agent     TEXT,
+    country        TEXT,
+    city           TEXT,
+    region         TEXT,
+    latitude       FLOAT,
+    longitude      FLOAT,
+    isp            TEXT,
+    request_path   TEXT,
+    request_method TEXT,
+    trust_score    FLOAT,
+    verdict        TEXT,
+    risk_flags     JSONB DEFAULT '[]',
+    metadata       JSONB DEFAULT '{}',
+    created_at     TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sal_agent   ON session_audit_log(agent_id);
+CREATE INDEX IF NOT EXISTS idx_sal_tenant  ON session_audit_log(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_sal_created ON session_audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sal_ip      ON session_audit_log(ip_address);
+CREATE INDEX IF NOT EXISTS idx_sal_event   ON session_audit_log(event_type);
+
+ALTER TABLE session_audit_log ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Service role has full access to session_audit_log"
+    ON session_audit_log FOR ALL
+    USING (auth.role() = 'service_role');
+
+-- =============================================================================
+-- SECTION 18B: AGENT PROFILE ENRICHMENT
+-- =============================================================================
+
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS agent_type       TEXT DEFAULT 'bot';
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS classification   TEXT DEFAULT 'general';
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS capabilities     JSONB DEFAULT '[]';
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS risk_tier        TEXT DEFAULT 'standard';
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS origin_ip        TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS origin_country   TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS last_ip          TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS last_country     TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS protocol         TEXT DEFAULT 'http';
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS model_provider   TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS model_name       TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS description      TEXT;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS max_tools        INT DEFAULT 10;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS allowed_actions  JSONB DEFAULT '[]';
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS blocked_actions  JSONB DEFAULT '[]';
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS agent_metadata   JSONB DEFAULT '{}';
+
+-- =============================================================================
+-- SECTION 19: SAMPLE DATA
 -- =============================================================================
 
 INSERT INTO tenants (tenant_id, tenant_name, organization_name, subscription_tier, admin_email, max_agents, max_activities, max_evidence_per_month) VALUES
@@ -823,9 +882,9 @@ ON CONFLICT (tenant_id) DO NOTHING;
 -- =============================================================================
 -- MIGRATION COMPLETE!
 -- =============================================================================
--- Total Tables: 45
--- Indexes: 31
--- RLS Policies: 7
+-- Total Tables: 46
+-- Indexes: 36
+-- RLS Policies: 8
 -- =============================================================================
 
 SELECT 'OCX Master Database Schema Created Successfully!' as result;

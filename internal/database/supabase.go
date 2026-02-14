@@ -87,6 +87,23 @@ type Agent struct {
 	FirstSeen              time.Time `json:"first_seen"`
 	LastUpdated            time.Time `json:"last_updated"`
 	CreatedAt              time.Time `json:"created_at"`
+	// Enriched profile fields
+	AgentType      string                 `json:"agent_type,omitempty"`
+	Classification string                 `json:"classification,omitempty"`
+	Capabilities   []string               `json:"capabilities,omitempty"`
+	RiskTier       string                 `json:"risk_tier,omitempty"`
+	OriginIP       string                 `json:"origin_ip,omitempty"`
+	OriginCountry  string                 `json:"origin_country,omitempty"`
+	LastIP         string                 `json:"last_ip,omitempty"`
+	LastCountry    string                 `json:"last_country,omitempty"`
+	Protocol       string                 `json:"protocol,omitempty"`
+	ModelProvider  string                 `json:"model_provider,omitempty"`
+	ModelName      string                 `json:"model_name,omitempty"`
+	Description    string                 `json:"description,omitempty"`
+	MaxTools       int                    `json:"max_tools,omitempty"`
+	AllowedActions []string               `json:"allowed_actions,omitempty"`
+	BlockedActions []string               `json:"blocked_actions,omitempty"`
+	AgentMetadata  map[string]interface{} `json:"agent_metadata,omitempty"`
 }
 
 // TrustScores represents trust score breakdown
@@ -253,6 +270,64 @@ func (sc *SupabaseClient) ListAgents(ctx context.Context, tenantID string, limit
 		Limit(limit, "").
 		ExecuteTo(&agents)
 	return agents, err
+}
+
+// ListAllAgents lists all agents across all tenants
+func (sc *SupabaseClient) ListAllAgents(ctx context.Context, limit int) ([]Agent, error) {
+	var agents []Agent
+	_, err := sc.client.From("agents").
+		Select("*", "", false).
+		Limit(limit, "").
+		Order("last_updated", nil).
+		ExecuteTo(&agents)
+	return agents, err
+}
+
+// ============================================================================
+// SESSION AUDIT LOG OPERATIONS
+// ============================================================================
+
+// InsertAuditLog inserts a session audit log entry
+func (sc *SupabaseClient) InsertAuditLog(entry interface{}) error {
+	var result []map[string]interface{}
+	_, err := sc.client.From("session_audit_log").
+		Insert(entry, false, "", "", "").
+		ExecuteTo(&result)
+	return err
+}
+
+// QueryAuditLogs queries session audit logs with filters
+func (sc *SupabaseClient) QueryAuditLogs(agentID, tenantID, eventType, ip, since, until string, limit, offset int) ([]map[string]interface{}, error) {
+	query := sc.client.From("session_audit_log").
+		Select("*", "", false).
+		Order("created_at", nil)
+
+	if agentID != "" {
+		query = query.Eq("agent_id", agentID)
+	}
+	if tenantID != "" {
+		query = query.Eq("tenant_id", tenantID)
+	}
+	if eventType != "" {
+		query = query.Eq("event_type", eventType)
+	}
+	if ip != "" {
+		query = query.Eq("ip_address", ip)
+	}
+	if since != "" {
+		query = query.Gte("created_at", since)
+	}
+	if until != "" {
+		query = query.Lte("created_at", until)
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	query = query.Limit(limit, "")
+
+	var logs []map[string]interface{}
+	_, err := query.ExecuteTo(&logs)
+	return logs, err
 }
 
 // ============================================================================
