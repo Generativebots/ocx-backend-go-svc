@@ -1,5 +1,5 @@
 # Stage 1: Builder
-FROM golang:1.23-bullseye as builder
+FROM golang:1.24-bookworm AS builder
 
 WORKDIR /app
 
@@ -11,10 +11,10 @@ RUN go mod download
 COPY . .
 
 # Build the API server binary
-RUN CGO_ENABLED=0 GOOS=linux go build -o ocx-api ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o ocx-api ./cmd/api
 
-# Stage 2: Runner (Distroless / Minimal Debian)
-FROM debian:bullseye-slim
+# Stage 2: Runner (Minimal Debian)
+FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
@@ -24,11 +24,9 @@ COPY --from=builder /app/ocx-api .
 COPY --from=builder /app/config.yaml .
 COPY --from=builder /app/tenants.yaml .
 
-# Cloud Run injects PORT=8080 by default; our config reads $PORT
+# Cloud Run injects PORT=8080 by default
 ENV PORT=8080
 
-# Expose ports (HTTP + gRPC)
-EXPOSE 8080 50051
+EXPOSE 8080
 
-# Run the API server
 CMD ["./ocx-api"]

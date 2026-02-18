@@ -3,13 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/binary"
 	"fmt"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -132,7 +132,12 @@ func main() {
 	toolClassifier = escrow.NewToolClassifier()
 	slog.Info("ToolClassifier initialized (§2 Class A/B registry)")
 	// 7. Tri-Factor Gate — §2 Identity + Signal + Cognitive validation
-	triFactorGate = escrow.NewTriFactorGate(toolClassifier, juryClient, entropyMonitor)
+	triFactorGate = escrow.NewTriFactorGate(toolClassifier, juryClient, entropyMonitor, escrow.TriFactorGateConfig{
+		IdentityThreshold:  getEnvFloat("TRI_FACTOR_IDENTITY_THRESHOLD", 0.65),
+		EntropyThreshold:   getEnvFloat("TRI_FACTOR_ENTROPY_THRESHOLD", 7.5),
+		JitterThreshold:    getEnvFloat("TRI_FACTOR_JITTER_THRESHOLD", 0.01),
+		CognitiveThreshold: getEnvFloat("TRI_FACTOR_COGNITIVE_THRESHOLD", 0.65),
+	})
 	slog.Info("TriFactorGate initialized (§2 sequestration pipeline)")
 	// 8. Micropayment Escrow — §4.2 funds hold/release/refund
 	micropaymentEscrow = escrow.NewMicropaymentEscrow()
@@ -153,9 +158,9 @@ func main() {
 	aiParser = protocol.NewUniversalAIParser()
 	slog.Info("UniversalAIParser initialized (MCP/OpenAI/A2A/LangChain/RAG/GenericAI)")
 	// 13. Reputation Wallet — agent trust score lookup
-	var repDB *sql.DB // Production: connect to Spanner/Postgres
-	reputationWallet = reputation.NewReputationWallet(repDB)
-	slog.Info("ReputationWallet initialized (agent trust scores)")
+	// Socket-gateway uses in-memory mode; the API server uses Supabase-backed.
+	reputationWallet = reputation.NewReputationWallet(nil)
+	slog.Info("ReputationWallet initialized (in-memory mode for socket-gateway)")
 	// 4. Database State Manager — connects to PostgreSQL
 	dbURL := os.Getenv("OCX_DATABASE_URL")
 	if dbURL != "" {
@@ -370,7 +375,7 @@ func processSocketEvent(event *SocketEvent) {
 	// Supports: MCP, OpenAI, A2A, LangChain, CrewAI, AutoGen, RAG, Custom
 	// =========================================================================
 	toolID := "network_call" // Default fallback
-	agentTrustScore := 0.5   // Neutral default
+	agentTrustScore := 0.3   // Conservative default for unknown agents (matches wallet.go newAgentDefaultScore)
 
 	if aiParser != nil {
 		aiPayload := aiParser.Parse(payload)
@@ -398,8 +403,14 @@ func processSocketEvent(event *SocketEvent) {
 		score, err := reputationWallet.GetTrustScore(ctx, agentID, tenantID)
 		if err == nil {
 			agentTrustScore = score
+		} else {
+			slog.Warn("Trust score lookup failed, using conservative default",
+				"agent_id", agentID, "error", err, "default", agentTrustScore)
 		}
 		slog.Info("Agent trust score: for /", "agent_trust_score", agentTrustScore, "tenant_i_d", tenantID, "agent_i_d", agentID)
+	} else {
+		slog.Warn("ReputationWallet is nil — using conservative default trust score",
+			"agent_id", agentID, "default", agentTrustScore)
 	}
 
 	var classification *escrow.ClassificationResult
@@ -674,4 +685,17 @@ func reportStats(statsMap *ebpf.Map) {
 func ipToString(ip uint32) string {
 	return fmt.Sprintf("%d.%d.%d.%d",
 		byte(ip), byte(ip>>8), byte(ip>>16), byte(ip>>24))
+}
+
+// getEnvFloat reads a float64 from an environment variable, returning def if unset or invalid.
+func getEnvFloat(key string, def float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
 }

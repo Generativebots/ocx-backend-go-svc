@@ -126,7 +126,7 @@ func main() {
 	}
 	escrowGate := escrow.NewEscrowGate(juryClient, escrow.NewEntropyMonitorLive(cfg.Escrow.EntropyThreshold))
 	toolClassifier := escrow.NewToolClassifier()
-	repWallet := reputation.NewReputationWallet(nil)
+	repWallet := reputation.NewReputationWallet(supabaseClient)
 
 	// =====================================================================
 	// Patent Gap Fixes — New Components
@@ -135,7 +135,12 @@ func main() {
 	// §2 Claim 2: TriFactorGate for full three-dimensional validation
 	var entropyMon escrow.EntropyMonitor
 	entropyMon = escrow.NewEntropyMonitorLive(cfg.Escrow.EntropyThreshold)
-	triFactorGate := escrow.NewTriFactorGate(toolClassifier, juryClient, entropyMon)
+	triFactorGate := escrow.NewTriFactorGate(toolClassifier, juryClient, entropyMon, escrow.TriFactorGateConfig{
+		IdentityThreshold:  cfg.TriFactor.IdentityThreshold,
+		EntropyThreshold:   cfg.TriFactor.EntropyThreshold,
+		JitterThreshold:    cfg.TriFactor.JitterThreshold,
+		CognitiveThreshold: cfg.TriFactor.CognitiveThreshold,
+	})
 	slog.Info("TriFactorGate initialized", "claim", 2, "component", "sequestration_pipeline")
 
 	// §7 Claim 7: Token Broker — JIT tokens with HMAC-SHA256 + attribution
@@ -181,6 +186,11 @@ func main() {
 	// §9 Claim 9: Ghost State Engine — business-state sandbox
 	ghostEngine := governance.NewGhostStateEngine()
 	slog.Info("GhostStateEngine initialized", "claim", 9)
+
+	// Governance Config Cache — tenant-configurable parameters
+	govAdapter := &governance.SupabaseConfigAdapter{Client: supabaseClient}
+	govConfigCache := governance.NewGovernanceConfigCache(govAdapter)
+	slog.Info("GovernanceConfigCache initialized")
 
 	// §2 Claim 2 (G2 fix): SPIFFE Verifier for x509-SVID identity validation
 	spiffeSocket := getEnvOrDefault("SPIFFE_ENDPOINT_SOCKET", "unix:///run/spire/sockets/agent.sock")
@@ -322,11 +332,11 @@ func main() {
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
-		// Check Supabase connectivity
+		// Check Supabase connectivity by looking up a known tenant
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
-		_, err := supabaseClient.GetTenant(ctx, "default-org")
+		_, err := supabaseClient.GetTenant(ctx, "00000000-0000-0000-0000-000000000001")
 		supabaseStatus := "connected"
 		if err != nil {
 			supabaseStatus = "error"
@@ -356,10 +366,13 @@ func main() {
 	// Route Registration — handlers from internal/handlers package
 	// =========================================================================
 
-	// Agents
+	// Agents — literal paths MUST come before parameterized {id} catch-all
 	api.HandleFunc("/agents", handlers.ListAgents(supabaseClient)).Methods("GET")
+	api.HandleFunc("/agents/registry", handlers.HandleListAgents(supabaseClient)).Methods("GET")
 	api.HandleFunc("/agents/{id}", handlers.GetAgent(supabaseClient)).Methods("GET")
 	api.HandleFunc("/agents/{id}/trust", handlers.GetTrustScores(supabaseClient)).Methods("GET")
+	api.HandleFunc("/agents/{id}/profile", handlers.HandleGetAgent(supabaseClient)).Methods("GET")
+	api.HandleFunc("/agents/{id}/profile", handlers.HandleUpdateAgent(supabaseClient)).Methods("PUT")
 
 	// Hub/Spoke
 	api.HandleFunc("/spokes", handlers.RegisterSpoke(hub)).Methods("POST")
@@ -443,20 +456,23 @@ func main() {
 	// Session Audit Log (Security Forensics)
 	api.HandleFunc("/sessions/audit", handlers.HandleSessionAuditLogs(supabaseClient)).Methods("GET")
 
-	// Enriched Agent Profiles
-	api.HandleFunc("/agents/registry", handlers.HandleListAgents(supabaseClient)).Methods("GET")
-	api.HandleFunc("/agents/{agentId}/profile", handlers.HandleGetAgent(supabaseClient)).Methods("GET")
-	api.HandleFunc("/agents/{agentId}/profile", handlers.HandleUpdateAgent(supabaseClient)).Methods("PUT")
+	// (Enriched Agent Profiles — registered above with the /agents block)
 
 	// Tenant Settings
 	api.HandleFunc("/tenant/settings", handlers.HandleGetTenantSettings(supabaseClient)).Methods("GET")
 	api.HandleFunc("/tenant/settings/crypto", handlers.HandleUpdateTenantCryptoAlgorithm(supabaseClient)).Methods("PUT")
 
+	// Tenant Governance Config — CRUD for tenant-configurable governance parameters
+	api.HandleFunc("/tenant/{tenantId}/governance-config", handlers.HandleGetGovernanceConfig(supabaseClient, govConfigCache)).Methods("GET")
+	api.HandleFunc("/tenant/{tenantId}/governance-config", handlers.HandleUpdateGovernanceConfig(supabaseClient, govConfigCache)).Methods("PUT")
+	api.HandleFunc("/tenant/{tenantId}/governance-config/reset", handlers.HandleResetGovernanceConfig(supabaseClient, govConfigCache)).Methods("POST")
+	api.HandleFunc("/tenant/{tenantId}/governance-audit", handlers.HandleGetGovernanceAuditLog(supabaseClient)).Methods("GET")
+
 	// Sandbox Status (§1 gVisor)
 	api.HandleFunc("/sandbox/status", handlers.HandleSandboxStatus(sandboxExecutor, ghostPool, stateCloner)).Methods("GET")
 
 	// HITL Routes — Patent Layer 4: Human-in-the-Loop Governance
-	api.HandleFunc("/hitl/decide", handlers.HandleHITLDecide(escrowGate, supabaseClient)).Methods("POST")
+	api.HandleFunc("/hitl/decide", handlers.HandleHITLDecide(escrowGate, supabaseClient, cfg.HITL.DefaultCostMultiplier)).Methods("POST")
 	api.HandleFunc("/hitl/decisions", handlers.HandleHITLDecisions(supabaseClient)).Methods("GET")
 	api.HandleFunc("/hitl/metrics", handlers.HandleHITLMetrics(supabaseClient)).Methods("GET")
 	api.HandleFunc("/hitl/rlhc/clusters", handlers.HandleRLHCClusters(supabaseClient)).Methods("GET")

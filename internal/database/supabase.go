@@ -72,21 +72,21 @@ type APIKey struct {
 
 // Agent represents an agent in the system
 type Agent struct {
-	AgentID                string    `json:"agent_id"`
-	TenantID               string    `json:"tenant_id"`
-	Organization           string    `json:"organization"`
-	TrustScore             float64   `json:"trust_score"`
-	BehavioralDrift        float64   `json:"behavioral_drift"`
-	GovTaxBalance          int64     `json:"gov_tax_balance"`
-	IsFrozen               bool      `json:"is_frozen"`
-	ReputationScore        float64   `json:"reputation_score"`
-	TotalInteractions      int64     `json:"total_interactions"`
-	SuccessfulInteractions int64     `json:"successful_interactions"`
-	FailedInteractions     int64     `json:"failed_interactions"`
-	Blacklisted            bool      `json:"blacklisted"`
-	FirstSeen              time.Time `json:"first_seen"`
-	LastUpdated            time.Time `json:"last_updated"`
-	CreatedAt              time.Time `json:"created_at"`
+	AgentID                string  `json:"agent_id"`
+	TenantID               string  `json:"tenant_id"`
+	Organization           string  `json:"organization"`
+	TrustScore             float64 `json:"trust_score"`
+	BehavioralDrift        float64 `json:"behavioral_drift"`
+	GovTaxBalance          int64   `json:"gov_tax_balance"`
+	IsFrozen               bool    `json:"is_frozen"`
+	ReputationScore        float64 `json:"reputation_score"`
+	TotalInteractions      int64   `json:"total_interactions"`
+	SuccessfulInteractions int64   `json:"successful_interactions"`
+	FailedInteractions     int64   `json:"failed_interactions"`
+	Blacklisted            bool    `json:"blacklisted"`
+	FirstSeen              string  `json:"first_seen,omitempty"`
+	LastUpdated            string  `json:"last_updated,omitempty"`
+	CreatedAt              string  `json:"created_at,omitempty"`
 	// Enriched profile fields
 	AgentType      string                 `json:"agent_type,omitempty"`
 	Classification string                 `json:"classification,omitempty"`
@@ -164,59 +164,59 @@ type HandshakeSession struct {
 
 // AgentIdentity represents PID to AgentID mapping
 type AgentIdentity struct {
-	PID        int32     `json:"pid"`
-	TenantID   string    `json:"tenant_id"`
-	AgentID    string    `json:"agent_id"`
-	BinaryHash string    `json:"binary_hash,omitempty"`
-	TrustLevel float64   `json:"trust_level,omitempty"`
-	CreatedAt  time.Time `json:"created_at,omitempty"`
-	ExpiresAt  time.Time `json:"expires_at,omitempty"`
+	PID        int32   `json:"pid"`
+	TenantID   string  `json:"tenant_id"`
+	AgentID    string  `json:"agent_id"`
+	BinaryHash string  `json:"binary_hash,omitempty"`
+	TrustLevel float64 `json:"trust_level,omitempty"`
+	CreatedAt  string  `json:"created_at,omitempty"`
+	ExpiresAt  string  `json:"expires_at,omitempty"`
 }
 
 // QuarantineRecord represents a quarantine record
 type QuarantineRecord struct {
-	QuarantineID  string     `json:"quarantine_id,omitempty"`
-	TenantID      string     `json:"tenant_id"`
-	AgentID       string     `json:"agent_id"`
-	Reason        string     `json:"reason"`
-	AlertSource   string     `json:"alert_source,omitempty"`
-	QuarantinedAt time.Time  `json:"quarantined_at,omitempty"`
-	ReleasedAt    *time.Time `json:"released_at,omitempty"`
-	IsActive      bool       `json:"is_active"`
+	QuarantineID  string  `json:"quarantine_id,omitempty"`
+	TenantID      string  `json:"tenant_id"`
+	AgentID       string  `json:"agent_id"`
+	Reason        string  `json:"reason"`
+	AlertSource   string  `json:"alert_source,omitempty"`
+	QuarantinedAt string  `json:"quarantined_at,omitempty"`
+	ReleasedAt    *string `json:"released_at,omitempty"`
+	IsActive      bool    `json:"is_active"`
 }
 
 // RecoveryAttempt represents a recovery attempt
 type RecoveryAttempt struct {
-	AttemptID     string    `json:"attempt_id,omitempty"`
-	TenantID      string    `json:"tenant_id"`
-	AgentID       string    `json:"agent_id"`
-	StakeAmount   int64     `json:"stake_amount"`
-	Success       bool      `json:"success"`
-	AttemptNumber int       `json:"attempt_number"`
-	CreatedAt     time.Time `json:"created_at,omitempty"`
+	AttemptID     string `json:"attempt_id,omitempty"`
+	TenantID      string `json:"tenant_id"`
+	AgentID       string `json:"agent_id"`
+	StakeAmount   int64  `json:"stake_amount"`
+	Success       bool   `json:"success"`
+	AttemptNumber int    `json:"attempt_number"`
+	CreatedAt     string `json:"created_at,omitempty"`
 }
 
 // ProbationPeriod represents a probation period
 type ProbationPeriod struct {
-	ProbationID string    `json:"probation_id,omitempty"`
-	TenantID    string    `json:"tenant_id"`
-	AgentID     string    `json:"agent_id"`
-	StartedAt   time.Time `json:"started_at,omitempty"`
-	EndsAt      time.Time `json:"ends_at"`
-	Threshold   float64   `json:"threshold"`
-	IsActive    bool      `json:"is_active"`
+	ProbationID string  `json:"probation_id,omitempty"`
+	TenantID    string  `json:"tenant_id"`
+	AgentID     string  `json:"agent_id"`
+	StartedAt   string  `json:"started_at,omitempty"`
+	EndsAt      string  `json:"ends_at"`
+	Threshold   float64 `json:"threshold"`
+	IsActive    bool    `json:"is_active"`
 }
 
 // RewardDistribution represents a reward distribution
 type RewardDistribution struct {
-	DistributionID     string    `json:"distribution_id,omitempty"`
-	TenantID           string    `json:"tenant_id"`
-	AgentID            string    `json:"agent_id"`
-	Amount             int64     `json:"amount"`
-	TrustScore         float64   `json:"trust_score,omitempty"`
-	ParticipationCount int       `json:"participation_count,omitempty"`
-	Formula            string    `json:"formula,omitempty"`
-	DistributedAt      time.Time `json:"distributed_at,omitempty"`
+	DistributionID     string  `json:"distribution_id,omitempty"`
+	TenantID           string  `json:"tenant_id"`
+	AgentID            string  `json:"agent_id"`
+	Amount             int64   `json:"amount"`
+	TrustScore         float64 `json:"trust_score,omitempty"`
+	ParticipationCount int     `json:"participation_count,omitempty"`
+	Formula            string  `json:"formula,omitempty"`
+	DistributedAt      string  `json:"distributed_at,omitempty"`
 }
 
 // ============================================================================
@@ -735,4 +735,61 @@ func (sc *SupabaseClient) QueryRows(table, selectCols, filterCol, filterVal stri
 		Eq(filterCol, filterVal).
 		ExecuteTo(dest)
 	return err
+}
+
+// ============================================================================
+// TENANT GOVERNANCE CONFIG — CRUD for tenant_governance_config table
+// ============================================================================
+
+// GetTenantGovernanceConfig retrieves the governance config for a tenant.
+// Returns nil (not error) if no config row exists.
+func (sc *SupabaseClient) GetTenantGovernanceConfig(tenantID string) (*TenantGovernanceConfigRow, error) {
+	var results []TenantGovernanceConfigRow
+	_, err := sc.client.From("tenant_governance_config").
+		Select("*", "", false).
+		Eq("tenant_id", tenantID).
+		ExecuteTo(&results)
+	if err != nil {
+		return nil, fmt.Errorf("query tenant_governance_config: %w", err)
+	}
+	if len(results) == 0 {
+		return nil, nil
+	}
+	return &results[0], nil
+}
+
+// UpsertTenantGovernanceConfig creates or updates the governance config for a tenant.
+func (sc *SupabaseClient) UpsertTenantGovernanceConfig(tenantID string, cfg *TenantGovernanceConfigRow) error {
+	cfg.TenantID = tenantID
+	_, _, err := sc.client.From("tenant_governance_config").
+		Upsert(cfg, "tenant_id", "", "").
+		Execute()
+	return err
+}
+
+// ============================================================================
+// GOVERNANCE AUDIT LOG — Insert and Query for governance_audit_log table
+// ============================================================================
+
+// InsertGovernanceAuditLog inserts a single audit log entry.
+func (sc *SupabaseClient) InsertGovernanceAuditLog(entry *GovernanceAuditLogRow) error {
+	_, _, err := sc.client.From("governance_audit_log").
+		Insert(entry, false, "", "", "").
+		Execute()
+	return err
+}
+
+// GetGovernanceAuditLogs retrieves audit log entries for a tenant, newest first.
+func (sc *SupabaseClient) GetGovernanceAuditLogs(tenantID string, limit int) ([]GovernanceAuditLogRow, error) {
+	var results []GovernanceAuditLogRow
+	_, err := sc.client.From("governance_audit_log").
+		Select("*", "", false).
+		Eq("tenant_id", tenantID).
+		Order("created_at", nil).
+		Limit(limit, "").
+		ExecuteTo(&results)
+	if err != nil {
+		return nil, fmt.Errorf("query governance_audit_log: %w", err)
+	}
+	return results, nil
 }

@@ -1,13 +1,14 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/gorilla/mux"
 	"github.com/ocx/backend/internal/database"
+	"github.com/ocx/backend/internal/multitenancy"
 )
 
 // ============================================================================
@@ -15,25 +16,34 @@ import (
 // ============================================================================
 
 // HandleListAgents returns all agents with enriched profile data.
-// GET /api/v1/agents?tenant_id=&limit=
+// GET /api/v1/agents?limit=
+// Tenant is extracted from the request context (set by TenantMiddleware).
 func HandleListAgents(db *database.SupabaseClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID := r.URL.Query().Get("tenant_id")
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		if limit <= 0 {
 			limit = 100
 		}
 
-		var agents []database.Agent
-		var err error
+		// Extract tenant from context (set by TenantMiddleware)
+		tenantID, err := multitenancy.GetTenantID(r.Context())
+		if err != nil {
+			// Fallback: try query param or header for backward compatibility
+			tenantID = r.URL.Query().Get("tenant_id")
+			if tenantID == "" {
+				tenantID = r.Header.Get("X-Tenant-ID")
+			}
+		}
 
+		var agents []database.Agent
 		if tenantID != "" {
-			agents, err = db.ListAgents(context.Background(), tenantID, limit)
+			agents, err = db.ListAgents(r.Context(), tenantID, limit)
 		} else {
-			agents, err = db.ListAllAgents(context.Background(), limit)
+			agents, err = db.ListAllAgents(r.Context(), limit)
 		}
 
 		if err != nil {
+			slog.Error("ListAgents failed", "error", err, "tenant_id", tenantID)
 			http.Error(w, `{"error":"failed to list agents"}`, http.StatusInternalServerError)
 			return
 		}
@@ -54,13 +64,27 @@ func HandleListAgents(db *database.SupabaseClient) http.HandlerFunc {
 func HandleGetAgent(db *database.SupabaseClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		agentID := mux.Vars(r)["agentId"]
-		tenantID := r.URL.Query().Get("tenant_id")
-		if tenantID == "" {
-			tenantID = "default-org"
+		if agentID == "" {
+			agentID = mux.Vars(r)["id"]
 		}
 
-		agent, err := db.GetAgent(context.Background(), tenantID, agentID)
+		// Extract tenant from context (set by TenantMiddleware)
+		tenantID, err := multitenancy.GetTenantID(r.Context())
 		if err != nil {
+			tenantID = r.URL.Query().Get("tenant_id")
+			if tenantID == "" {
+				tenantID = r.Header.Get("X-Tenant-ID")
+			}
+		}
+
+		if tenantID == "" {
+			http.Error(w, `{"error":"tenant context required"}`, http.StatusBadRequest)
+			return
+		}
+
+		agent, err := db.GetAgent(r.Context(), tenantID, agentID)
+		if err != nil {
+			slog.Error("GetAgent failed", "error", err, "agent_id", agentID, "tenant_id", tenantID)
 			http.Error(w, `{"error":"failed to get agent"}`, http.StatusInternalServerError)
 			return
 		}
@@ -79,6 +103,9 @@ func HandleGetAgent(db *database.SupabaseClient) http.HandlerFunc {
 func HandleUpdateAgent(db *database.SupabaseClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		agentID := mux.Vars(r)["agentId"]
+		if agentID == "" {
+			agentID = mux.Vars(r)["id"]
+		}
 
 		var updates database.Agent
 		if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
@@ -87,11 +114,23 @@ func HandleUpdateAgent(db *database.SupabaseClient) http.HandlerFunc {
 		}
 
 		updates.AgentID = agentID
-		if updates.TenantID == "" {
-			updates.TenantID = "default-org"
+
+		// Extract tenant from context
+		tenantID, err := multitenancy.GetTenantID(r.Context())
+		if err != nil {
+			tenantID = r.Header.Get("X-Tenant-ID")
+		}
+		if tenantID != "" {
+			updates.TenantID = tenantID
 		}
 
-		if err := db.UpdateAgent(context.Background(), &updates); err != nil {
+		if updates.TenantID == "" {
+			http.Error(w, `{"error":"tenant context required"}`, http.StatusBadRequest)
+			return
+		}
+
+		if err := db.UpdateAgent(r.Context(), &updates); err != nil {
+			slog.Error("UpdateAgent failed", "error", err, "agent_id", agentID)
 			http.Error(w, `{"error":"failed to update agent"}`, http.StatusInternalServerError)
 			return
 		}
@@ -122,13 +161,24 @@ func GetAgent(db *database.SupabaseClient) http.HandlerFunc {
 func GetTrustScores(db *database.SupabaseClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		agentID := mux.Vars(r)["id"]
-		tenantID := r.URL.Query().Get("tenant_id")
-		if tenantID == "" {
-			tenantID = "default-org"
+
+		// Extract tenant from context (set by TenantMiddleware)
+		tenantID, err := multitenancy.GetTenantID(r.Context())
+		if err != nil {
+			tenantID = r.URL.Query().Get("tenant_id")
+			if tenantID == "" {
+				tenantID = r.Header.Get("X-Tenant-ID")
+			}
 		}
 
-		scores, err := db.GetTrustScores(context.Background(), tenantID, agentID)
+		if tenantID == "" {
+			http.Error(w, `{"error":"tenant context required"}`, http.StatusBadRequest)
+			return
+		}
+
+		scores, err := db.GetTrustScores(r.Context(), tenantID, agentID)
 		if err != nil {
+			slog.Error("GetTrustScores failed", "error", err, "agent_id", agentID, "tenant_id", tenantID)
 			http.Error(w, `{"error":"failed to get trust scores"}`, http.StatusInternalServerError)
 			return
 		}

@@ -76,13 +76,20 @@ func HandleGovern(
 		}
 
 		slog.Info("/govern: tool= agent= tenant= protocol", "tool_name", req.ToolName, "agent_i_d", req.AgentID, "tenant_i_d", req.TenantID, "protocol", req.Protocol)
-		// Step 1: Get agent trust score — default from config
-		trustScore := cfg.Escrow.DefaultTrustScore
+		// Step 1: Get agent trust score from Supabase via ReputationWallet
+		// No hardcoded default — the wallet queries the agents table directly.
+		var trustScore float64
 		if wallet != nil {
 			s, err := wallet.GetTrustScore(ctx, req.AgentID, req.TenantID)
-			if err == nil {
-				trustScore = s
+			if err != nil {
+				slog.Warn("Trust score retrieval failed, using wallet default",
+					"agent_id", req.AgentID, "error", err)
 			}
+			trustScore = s
+		} else {
+			slog.Error("ReputationWallet is nil — cannot evaluate trust, blocking")
+			http.Error(w, `{"error":"governance wallet unavailable"}`, http.StatusServiceUnavailable)
+			return
 		}
 
 		// Step 1b: Check Tool Catalog policy (if tool is registered)
@@ -115,13 +122,22 @@ func HandleGovern(
 
 		// Step 2: Classify the tool call (if not already blocked by policy)
 		if !policyBlocked {
+			// Fetch agent's active JIT entitlements (Claim 7)
+			var agentEntitlements []string
+			if jit != nil {
+				activeEnts := jit.GetActiveEntitlements(req.AgentID)
+				for _, ent := range activeEnts {
+					agentEntitlements = append(agentEntitlements, ent.Permission)
+				}
+			}
+
 			classification, err := classifier.Classify(escrow.ClassificationRequest{
 				ToolID:          req.ToolName,
 				AgentID:         req.AgentID,
 				TenantID:        req.TenantID,
 				Args:            req.Arguments,
 				AgentTrustScore: trustScore,
-				Entitlements:    []string{},
+				Entitlements:    agentEntitlements,
 			})
 			if err != nil {
 				// Fail-secure: treat unknown tools as CLASS_B

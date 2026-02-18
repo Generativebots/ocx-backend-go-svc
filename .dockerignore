@@ -1,63 +1,13 @@
-# =============================================================================
-# OCX Go Backend — .dockerignore
-# =============================================================================
-
-# Version control
+# Dependencies
 .git
-.gitignore
-
-# IDE / Editor
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-
-# CI/CD
-.github/
-.gitlab-ci.yml
-cloudbuild.yaml
-
-# Documentation
-*.md
-docs/
-PHASE2_GVISOR_GUIDE.md
-INTEGRATION_GUIDE.md
-
-# Environment files
+.github
+.vscode
 .env
 .env.*
-tenants.yaml
-
-# OS artifacts
-.DS_Store
-Thumbs.db
-
-# Built binaries (don't send to Docker context)
-server
-probe
-api
-loadtest
-tmp_server
-.!*!tmp_server
-bin/
-dist/
-
-# Test files
-*_test.go
-*.test
-*.out
-loadtest/
-
-# eBPF source (not needed at runtime unless compiling)
-# ebpf/*.c  — uncomment if eBPF is pre-compiled
-
-# Scripts
-scripts/
-deploy.sh
-migrate.sh
-test_connection.sh
-
-# Gemini / AI tooling
-.gemini/
-.agent/
+*.md
+LICENSE
+db/
+docs/
+**/*_test.go
+**/testdata/
+tmp/

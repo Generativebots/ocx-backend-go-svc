@@ -24,12 +24,8 @@ func NewReputationStore(config WalletConfig) (ReputationStore, error) {
 		return NewSpannerWallet(config.SpannerProject, config.SpannerInstance, config.SpannerDatabase)
 
 	case "sqlite", "":
-		// Default to SQLite for local development
-		dbPath := config.SQLitePath
-		if dbPath == "" {
-			dbPath = "reputation.db"
-		}
-		return NewWallet(dbPath)
+		// Legacy fallback: in-memory mode (Supabase-backed wallet is preferred)
+		return NewReputationWallet(nil), nil
 
 	default:
 		return nil, fmt.Errorf("unknown backend: %s", config.Backend)

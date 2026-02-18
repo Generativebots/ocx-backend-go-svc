@@ -54,7 +54,7 @@ var validDecisionTypes = map[string]bool{
 
 // HandleHITLDecide records a human override decision and optionally releases/blocks an escrow item.
 // POST /api/v1/hitl/decide
-func HandleHITLDecide(gate *escrow.EscrowGate, client *database.SupabaseClient) http.HandlerFunc {
+func HandleHITLDecide(gate *escrow.EscrowGate, client *database.SupabaseClient, costMultiplier float64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			EscrowID        string                 `json:"escrow_id"`
@@ -126,7 +126,7 @@ func HandleHITLDecide(gate *escrow.EscrowGate, client *database.SupabaseClient) 
 			OriginalVerdict: req.OriginalVerdict,
 			ModifiedPayload: req.ModifiedPayload,
 			Reason:          req.Reason,
-			CostMultiplier:  10.0,
+			CostMultiplier:  costMultiplier,
 		}
 
 		if client != nil {
@@ -150,7 +150,7 @@ func HandleHITLDecide(gate *escrow.EscrowGate, client *database.SupabaseClient) 
 			"status":          "recorded",
 			"decision_type":   req.DecisionType,
 			"escrow_released": escrowReleased,
-			"cost_ocx":        10.0,
+			"cost_ocx":        costMultiplier,
 			"timestamp":       time.Now().UTC().Format(time.RFC3339),
 		})
 	}
@@ -225,17 +225,21 @@ func HandleHITLMetrics(client *database.SupabaseClient) http.HandlerFunc {
 			overrideRate = float64(byType["ALLOW_OVERRIDE"]) / float64(totalDecisions)
 		}
 
-		// If no real data, return sensible demo metrics
+		// No real data — return actual zeros
 		if totalDecisions == 0 {
-			totalDecisions = 142
-			byType = map[string]int{
-				"ALLOW_OVERRIDE": 98,
-				"BLOCK_OVERRIDE": 31,
-				"MODIFY_OUTPUT":  13,
-			}
-			overrideRate = 0.69
-			totalCost = 1420.0
-			last24h = 12
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"total_decisions":      0,
+				"by_type":              byType,
+				"override_rate":        0.0,
+				"avg_response_seconds": 0.0,
+				"total_cost_ocx":       0.0,
+				"trend_24h": map[string]interface{}{
+					"decisions": 0,
+					"cost":      0.0,
+				},
+			})
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")

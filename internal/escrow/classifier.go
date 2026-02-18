@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+
+	"github.com/ocx/backend/internal/governance"
 )
 
 // ActionClassification defines the reversibility class of a tool call
@@ -132,6 +134,9 @@ type DynamicOverride struct {
 type ToolClassifier struct {
 	mu       sync.RWMutex
 	registry map[string]*ToolClassification
+
+	// Governance config — tenant-specific unknown tool thresholds
+	govConfig *governance.GovernanceConfigCache
 }
 
 // NewToolClassifier creates a new classifier with default tool registry
@@ -141,6 +146,12 @@ func NewToolClassifier() *ToolClassifier {
 	}
 	tc.loadDefaultRegistry()
 	return tc
+}
+
+// SetGovernanceConfig attaches a governance config cache to the classifier.
+// When set, unknown tool min reputation and tax coefficient are read from tenant config.
+func (tc *ToolClassifier) SetGovernanceConfig(cache *governance.GovernanceConfigCache) {
+	tc.govConfig = cache
 }
 
 // loadDefaultRegistry populates the classifier with known tools
@@ -279,13 +290,20 @@ func (tc *ToolClassifier) Classify(req ClassificationRequest) (*ClassificationRe
 
 	// Handle unknown tools - default to CLASS_B (fail secure)
 	if !exists {
+		unknownMinRep := 0.95
+		unknownTaxCoeff := 5.0
+		if tc.govConfig != nil {
+			cfg := tc.govConfig.GetConfig(req.TenantID)
+			unknownMinRep = cfg.UnknownToolMinReputation
+			unknownTaxCoeff = cfg.UnknownToolTaxCoeff
+		}
 		classification = &ToolClassification{
 			ToolID:                   req.ToolID,
 			ActionClass:              CLASS_B,
 			ReversibilityIndex:       0,
 			EscrowPolicy:             ATOMIC_HOLD,
-			MinReputationScore:       0.95,
-			GovernanceTaxCoefficient: 5.0,
+			MinReputationScore:       unknownMinRep,
+			GovernanceTaxCoefficient: unknownTaxCoeff,
 			RequiredEntitlements:     []string{},
 			Description:              "Unknown tool - classified as CLASS_B for safety",
 			RiskCategory:             "UNKNOWN",

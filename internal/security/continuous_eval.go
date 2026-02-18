@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/ocx/backend/internal/governance"
 )
 
 // ============================================================================
@@ -96,6 +98,21 @@ func NewContinuousAccessEvaluator(
 		config:        cfg,
 		stopCh:        make(chan struct{}),
 	}
+}
+
+// SetGovernanceConfig updates drift/anomaly thresholds from tenant governance config.
+// This supplements the existing env var and constructor overrides.
+func (cae *ContinuousAccessEvaluator) SetGovernanceConfig(cache *governance.GovernanceConfigCache, tenantID string) {
+	if cache == nil {
+		return
+	}
+	cfg := cache.GetConfig(tenantID)
+	cae.config.DriftThreshold = cfg.DriftThreshold
+	cae.config.AnomalyThreshold = cfg.AnomalyThreshold
+	slog.Info("CAE configured from tenant governance",
+		"tenant_id", tenantID,
+		"drift_threshold", cae.config.DriftThreshold,
+		"anomaly_threshold", cae.config.AnomalyThreshold)
 }
 
 // Start begins the background evaluation sweep goroutine.

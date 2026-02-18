@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
@@ -25,7 +26,9 @@ type SPIFFEVerifier struct {
 
 // NewSPIFFEVerifier creates a new SPIFFE verifier
 func NewSPIFFEVerifier(socketPath string) (*SPIFFEVerifier, error) {
-	ctx := context.Background()
+	// Use a timeout to avoid blocking startup when SPIRE agent is unavailable
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 
 	// Connect to SPIRE agent
 	source, err := workloadapi.NewX509Source(
@@ -39,7 +42,7 @@ func NewSPIFFEVerifier(socketPath string) (*SPIFFEVerifier, error) {
 	slog.Info("Connected to SPIRE agent at", "socket_path", socketPath)
 	return &SPIFFEVerifier{
 		source: source,
-		ctx:    ctx,
+		ctx:    context.Background(),
 	}, nil
 }
 

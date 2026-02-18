@@ -23,6 +23,8 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"github.com/ocx/backend/internal/governance"
 )
 
 // EntropyMonitorLive monitors real-time handshake intervals
@@ -33,6 +35,9 @@ type EntropyMonitorLive struct {
 	logger        *log.Logger
 	cleanupTicker *time.Ticker
 	stopCleanup   chan struct{}
+
+	// Governance config — tenant-specific entropy thresholds
+	govConfig *governance.GovernanceConfigCache
 }
 
 // NewEntropyMonitorLive creates a live entropy monitor
@@ -49,6 +54,12 @@ func NewEntropyMonitorLive(baseThreshold float64) *EntropyMonitorLive {
 	go em.cleanupOldIntervals()
 
 	return em
+}
+
+// SetGovernanceConfig attaches a governance config cache to the entropy monitor.
+// When set, entropy thresholds are read from tenant-specific config.
+func (em *EntropyMonitorLive) SetGovernanceConfig(cache *governance.GovernanceConfigCache) {
+	em.govConfig = cache
 }
 
 // RecordHandshake records a handshake timestamp for an agent
@@ -98,9 +109,15 @@ func (em *EntropyMonitorLive) CheckEntropy(ctx context.Context, data []byte, age
 		return false, fmt.Errorf("entropy too low: %.2f < %.2f", entropy, threshold)
 	}
 
-	if entropy > 4.8 {
-		em.logger.Printf("🚨 High entropy detected for agent %s: %.2f > 4.8 (possible randomness attack)", agentID, entropy)
-		return false, fmt.Errorf("entropy too high: %.2f > 4.8", entropy)
+	// High entropy cap — from governance config or default 4.8
+	highEntropyCap := 4.8
+	if em.govConfig != nil {
+		// Use a generic tenant lookup; in production the tenantID would be passed via context
+		highEntropyCap = em.govConfig.GetConfig("default-tenant").EntropyHighCap
+	}
+	if entropy > highEntropyCap {
+		em.logger.Printf("🚨 High entropy detected for agent %s: %.2f > %.2f (possible randomness attack)", agentID, entropy, highEntropyCap)
+		return false, fmt.Errorf("entropy too high: %.2f > %.2f", entropy, highEntropyCap)
 	}
 
 	em.logger.Printf("✅ Entropy check passed for agent %s: %.2f", agentID, entropy)
@@ -234,15 +251,22 @@ func (em *EntropyMonitorLive) Analyze(payload []byte, tenantID string) EntropyRe
 		entropy -= p * math.Log2(p)
 	}
 
-	// Determine verdict based on thresholds
-	// English text: ~3.5-4.5, JSON/XML: ~4.5-5.5, Compressed: ~7.0-7.5, Encrypted: ~7.5-8.0
+	// Determine verdict based on thresholds from governance config
+	encryptedThreshold := 7.5
+	suspiciousThreshold := 6.0
+	if em.govConfig != nil {
+		cfg := em.govConfig.GetConfig(tenantID)
+		encryptedThreshold = cfg.EntropyEncryptedThreshold
+		suspiciousThreshold = cfg.EntropySuspiciousThreshold
+	}
+
 	verdict := "CLEAN"
 	confidence := 0.9
 
-	if entropy > 7.5 {
+	if entropy > encryptedThreshold {
 		verdict = "ENCRYPTED"
 		em.logger.Printf("🚨 Tenant %s: High entropy %.2f - potential exfiltration", tenantID, entropy)
-	} else if entropy > 6.0 {
+	} else if entropy > suspiciousThreshold {
 		verdict = "SUSPICIOUS"
 		confidence = 0.7
 	}

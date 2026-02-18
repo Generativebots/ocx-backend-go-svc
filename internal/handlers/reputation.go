@@ -8,6 +8,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/ocx/backend/internal/escrow"
 	"github.com/ocx/backend/internal/evidence"
+	"github.com/ocx/backend/internal/multitenancy"
 	"github.com/ocx/backend/internal/reputation"
 )
 
@@ -57,9 +58,12 @@ func HandlePoolStats(
 	wallet *reputation.ReputationWallet,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID := r.Header.Get("X-Tenant-ID")
-		if tenantID == "" {
-			tenantID = "default-org"
+		tenantID, err := multitenancy.GetTenantID(r.Context())
+		if err != nil || tenantID == "" {
+			tenantID = r.Header.Get("X-Tenant-ID")
+			if tenantID == "" {
+				tenantID = "unknown"
+			}
 		}
 
 		// Collect vault stats (Stats() exists on EvidenceVault)

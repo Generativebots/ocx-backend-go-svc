@@ -7,6 +7,8 @@ import (
 	"log"
 	"strings"
 
+	"github.com/ocx/backend/internal/governance"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -16,9 +18,10 @@ import (
 // hardcoded true/ALLOW. When the gRPC proto is compiled and the Python Jury
 // service is deployed, the gRPC calls replace the inline logic below.
 type JuryGRPCClient struct {
-	conn   *grpc.ClientConn
-	logger *log.Logger
-	addr   string
+	conn      *grpc.ClientConn
+	logger    *log.Logger
+	addr      string
+	govConfig *governance.GovernanceConfigCache
 	// In production with compiled proto: client pb.JuryServiceClient
 }
 
@@ -34,6 +37,12 @@ func NewJuryGRPCClient(juryAddr string) (*JuryGRPCClient, error) {
 		logger: log.New(log.Writer(), "[JuryClient] ", log.LstdFlags),
 		addr:   juryAddr,
 	}, nil
+}
+
+// SetGovernanceConfig attaches a governance config cache to the jury client.
+// When set, trust weights and thresholds are read from tenant config.
+func (j *JuryGRPCClient) SetGovernanceConfig(cache *governance.GovernanceConfigCache) {
+	j.govConfig = cache
 }
 
 // EvaluateAction calls the Python Jury service with weighted voting.
@@ -152,10 +161,23 @@ func (j *JuryGRPCClient) Assess(ctx context.Context, transactionID, tenantID str
 	attestationScore := 0.6 + float64((hash/3000)%40)/100.0 // 0.60 – 0.99
 	historyScore := 0.5 + float64((hash/120000)%50)/100.0   // 0.50 – 0.99
 
-	// Weighted trust formula: 40% audit + 30% reputation + 20% attestation + 10% history
-	trustLevel := auditScore*0.40 + reputationScore*0.30 + attestationScore*0.20 + historyScore*0.10
-
-	const trustThreshold = 0.65
+	// Weighted trust formula — weights from tenant governance config
+	var (
+		auditW         = 0.40
+		repW           = 0.30
+		attestW        = 0.20
+		hisW           = 0.10
+		trustThreshold = 0.65
+	)
+	if j.govConfig != nil {
+		cfg := j.govConfig.GetConfig(tenantID)
+		auditW = cfg.JuryAuditWeight
+		repW = cfg.JuryReputationWeight
+		attestW = cfg.JuryAttestationWeight
+		hisW = cfg.JuryHistoryWeight
+		trustThreshold = cfg.JuryTrustThreshold
+	}
+	trustLevel := auditScore*auditW + reputationScore*repW + attestationScore*attestW + historyScore*hisW
 
 	verdict := "ALLOW"
 	reasoning := fmt.Sprintf("Trust score %.3f meets threshold %.2f (audit=%.2f, rep=%.2f, attest=%.2f, hist=%.2f)",

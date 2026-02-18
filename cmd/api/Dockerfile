@@ -1,5 +1,5 @@
 # Multi-stage build for Cloud Run
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
@@ -14,20 +14,22 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags="-w -s" \
     -o api \
-    ./cmd/api/main.go
+    ./cmd/api
 
 # Final lightweight image
-FROM alpine:latest
+FROM alpine:3.21
 
 # Add ca-certificates for HTTPS
 RUN apk --no-cache add ca-certificates
 
 WORKDIR /root/
 
-# Copy binary from builder
+# Copy binary and config from builder
 COPY --from=builder /app/api .
+COPY --from=builder /app/config.yaml .
+COPY --from=builder /app/tenants.yaml .
 
-# Cloud Run uses PORT environment variable
+# Cloud Run injects PORT=8080 by default
 ENV PORT=8080
 EXPOSE 8080
 

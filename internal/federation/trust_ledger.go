@@ -14,6 +14,8 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"github.com/ocx/backend/internal/governance"
 )
 
 // PersistentTrustLedger stores and retrieves trust scores for cross-OCX
@@ -78,6 +80,20 @@ func NewPersistentTrustLedger() *PersistentTrustLedger {
 		decayHalfLifeHours: 168, // 1 week half-life
 		minTrustFloor:      0.1,
 	}
+}
+
+// SetGovernanceConfig loads trust decay parameters from the tenant governance config.
+func (ptl *PersistentTrustLedger) SetGovernanceConfig(cache *governance.GovernanceConfigCache, tenantID string) {
+	if cache == nil {
+		return
+	}
+	cfg := cache.GetConfig(tenantID)
+	ptl.decayHalfLifeHours = cfg.DecayHalfLifeHours
+	ptl.minTrustFloor = cfg.HandshakeMinTrust
+	slog.Info("Trust ledger configured from tenant governance",
+		"tenant_id", tenantID,
+		"decay_hours", ptl.decayHalfLifeHours,
+		"min_trust", ptl.minTrustFloor)
 }
 
 // RecordHandshake records the outcome of a cross-OCX handshake and updates trust.

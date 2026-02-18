@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ocx/backend/internal/governance"
 	pb "github.com/ocx/backend/pb"
 )
 
@@ -37,9 +38,11 @@ type HandshakeSession struct {
 	ledger *TrustAttestationLedger
 
 	// Results
-	trustLevel float64
-	trustTax   float64
-	verdict    string
+	trustLevel    float64
+	trustTax      float64
+	verdict       string
+	minTrustLevel float64 // configurable: minimum trust for acceptance
+	baseTaxRate   float64 // configurable: base rate for trust tax calculation
 
 	// Dev/test fallback key (when no SPIFFE agent) - kept for backward compat
 	devKey *ecdsa.PrivateKey
@@ -62,7 +65,29 @@ func NewHandshakeSession(local, remote *OCXInstance, ledger *TrustAttestationLed
 		ledger:         ledger,
 		cryptoProvider: cp,
 		stateMachine:   NewHandshakeStateMachine(sessionID),
+		minTrustLevel:  0.5,  // default — overridden by SetConfig
+		baseTaxRate:    0.10, // default — overridden by SetConfig
 	}
+}
+
+// SetThresholds sets configurable trust thresholds from external config.
+func (hs *HandshakeSession) SetThresholds(minTrust, baseTax float64) {
+	if minTrust > 0 {
+		hs.minTrustLevel = minTrust
+	}
+	if baseTax > 0 {
+		hs.baseTaxRate = baseTax
+	}
+}
+
+// SetGovernanceConfig loads trust thresholds from the tenant governance config.
+// tenantID is the local tenant initiating the handshake.
+func (hs *HandshakeSession) SetGovernanceConfig(cache *governance.GovernanceConfigCache, tenantID string) {
+	if cache == nil {
+		return
+	}
+	cfg := cache.GetConfig(tenantID)
+	hs.SetThresholds(cfg.HandshakeMinTrust, cfg.FederationTaxBaseRate)
 }
 
 // ============================================================================
@@ -481,8 +506,8 @@ func (hs *HandshakeSession) ReceiveAttestation(ctx context.Context, attestation 
 
 // FinalizeHandshake makes the final accept/reject decision
 func (hs *HandshakeSession) FinalizeHandshake(ctx context.Context, attestation *pb.HandshakeAttestation) (*pb.HandshakeResult, error) {
-	// Minimum trust threshold
-	minTrustLevel := 0.5
+	// Minimum trust threshold — from configuration
+	minTrustLevel := hs.minTrustLevel
 
 	var verdict string
 	var reason string
@@ -586,7 +611,7 @@ func (hs *HandshakeSession) getHistoryScore() float64 {
 func (hs *HandshakeSession) calculateTrustTax(trustLevel float64) float64 {
 	// Trust tax formula: tax = (1 - trust_level) * base_rate
 	// Higher trust = lower tax
-	baseRate := 0.10 // 10% base rate
+	baseRate := hs.baseTaxRate
 
 	trustTax := (1.0 - trustLevel) * baseRate
 

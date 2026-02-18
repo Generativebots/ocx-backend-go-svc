@@ -7,9 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"math"
 	"sync"
 	"time"
+
+	"github.com/ocx/backend/internal/governance"
 )
 
 // TriFactorSignal represents one dimension of the Tri-Factor Gate
@@ -201,19 +204,62 @@ type TriFactorPendingItem struct {
 	ReleaseChan    chan *TriFactorResult
 }
 
-// NewTriFactorGate creates a new Tri-Factor Gate
-func NewTriFactorGate(classifier *ToolClassifier, jury JuryClient, entropy EntropyMonitor) *TriFactorGate {
-	return &TriFactorGate{
-		pending:            make(map[string]*TriFactorPendingItem),
-		classifier:         classifier,
-		juryClient:         jury,
-		entropyClient:      entropy,
-		responseLengths:    make(map[string][]float64),
+// TriFactorGateConfig holds configurable thresholds for the Tri-Factor Gate.
+type TriFactorGateConfig struct {
+	IdentityThreshold  float64
+	EntropyThreshold   float64
+	JitterThreshold    float64
+	CognitiveThreshold float64
+}
+
+// NewTriFactorGate creates a new Tri-Factor Gate with configurable thresholds.
+// If cfg is nil, conservative defaults are used.
+func NewTriFactorGate(classifier *ToolClassifier, jury JuryClient, entropy EntropyMonitor, cfg ...TriFactorGateConfig) *TriFactorGate {
+	g := &TriFactorGate{
+		pending:         make(map[string]*TriFactorPendingItem),
+		classifier:      classifier,
+		juryClient:      jury,
+		entropyClient:   entropy,
+		responseLengths: make(map[string][]float64),
+		// Conservative defaults — overridden by cfg if provided
 		identityThreshold:  0.65,
 		entropyThreshold:   7.5,
 		jitterThreshold:    0.01,
 		cognitiveThreshold: 0.65,
 	}
+	if len(cfg) > 0 {
+		if cfg[0].IdentityThreshold > 0 {
+			g.identityThreshold = cfg[0].IdentityThreshold
+		}
+		if cfg[0].EntropyThreshold > 0 {
+			g.entropyThreshold = cfg[0].EntropyThreshold
+		}
+		if cfg[0].JitterThreshold > 0 {
+			g.jitterThreshold = cfg[0].JitterThreshold
+		}
+		if cfg[0].CognitiveThreshold > 0 {
+			g.cognitiveThreshold = cfg[0].CognitiveThreshold
+		}
+	}
+	return g
+}
+
+// SetGovernanceConfig loads Tri-Factor Gate thresholds from tenant governance config.
+func (g *TriFactorGate) SetGovernanceConfig(cache *governance.GovernanceConfigCache, tenantID string) {
+	if cache == nil {
+		return
+	}
+	cfg := cache.GetConfig(tenantID)
+	g.identityThreshold = cfg.IdentityThreshold
+	g.entropyThreshold = cfg.EntropyThreshold
+	g.jitterThreshold = cfg.JitterThreshold
+	g.cognitiveThreshold = cfg.CognitiveThreshold
+	slog.Info("Tri-Factor Gate configured from tenant governance",
+		"tenant_id", tenantID,
+		"identity", g.identityThreshold,
+		"entropy", g.entropyThreshold,
+		"jitter", g.jitterThreshold,
+		"cognitive", g.cognitiveThreshold)
 }
 
 // Sequester places a Class B action into the Tri-Factor Gate for validation
@@ -378,9 +424,10 @@ func (g *TriFactorGate) triggerCognitiveValidation(ctx context.Context, item *Tr
 		result.JuryVerdict = juryResult.Verdict
 		result.JuryTrustLevel = juryResult.TrustLevel
 	} else {
-		// Mock jury for testing
-		result.JuryVerdict = "ALLOW"
-		result.JuryTrustLevel = 0.85
+		// No jury service — degrade safely instead of silently passing
+		result.JuryVerdict = "HOLD"
+		result.JuryTrustLevel = 0.0
+		slog.Warn("Jury client is nil — cognitive validation degraded to HOLD")
 	}
 
 	// Check APE rules (would call APE engine)

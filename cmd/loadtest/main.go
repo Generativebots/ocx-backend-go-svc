@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -63,10 +62,7 @@ func main() {
 
 func runLoadTest(config LoadTestConfig) *LoadTestStats {
 	// Initialize components
-	wallet, err := reputation.NewWallet("load_test_reputation.db")
-	if err != nil {
-		log.Fatalf("Failed to create wallet: %v", err)
-	}
+	wallet := reputation.NewReputationWallet(nil) // Loadtest uses in-memory mode
 	defer wallet.Close()
 
 	gate := escrow.NewEscrowGate(

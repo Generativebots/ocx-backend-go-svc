@@ -36,6 +36,8 @@ type Config struct {
 	Security   SecurityConfig   `yaml:"security"`
 	Sovereign  SovereignConfig  `yaml:"sovereign"`
 	Redis      RedisConfig      `yaml:"redis"`
+	TriFactor  TriFactorConfig  `yaml:"tri_factor"`
+	HITL       HITLConfig       `yaml:"hitl"`
 }
 
 type ServerConfig struct {
@@ -78,7 +80,6 @@ type EscrowConfig struct {
 	EntropyThreshold  float64 `yaml:"entropy_threshold"`
 	EnableLiveCapture bool    `yaml:"enable_live_capture"`
 	JuryServiceAddr   string  `yaml:"jury_service_addr"`
-	DefaultTrustScore float64 `yaml:"default_trust_score"`
 	FailureTaxRate    float64 `yaml:"failure_tax_rate"`
 	JITEntitlementTTL int     `yaml:"jit_entitlement_ttl_sec"`
 }
@@ -103,6 +104,19 @@ type TrustSecrets struct {
 type HandshakeConfig struct {
 	SessionExpiryMinutes int      `yaml:"session_expiry_minutes"`
 	SupportedVersions    []string `yaml:"supported_versions"`
+	MinTrustLevel        float64  `yaml:"min_trust_level"`
+	BaseTaxRate          float64  `yaml:"base_tax_rate"`
+}
+
+type TriFactorConfig struct {
+	IdentityThreshold  float64 `yaml:"identity_threshold"`
+	EntropyThreshold   float64 `yaml:"entropy_threshold"`
+	JitterThreshold    float64 `yaml:"jitter_threshold"`
+	CognitiveThreshold float64 `yaml:"cognitive_threshold"`
+}
+
+type HITLConfig struct {
+	DefaultCostMultiplier float64 `yaml:"default_cost_multiplier"`
 }
 
 type GovernanceConfig struct {
@@ -306,9 +320,6 @@ func (c *Config) applyEnvOverrides() {
 	}
 
 	// Escrow extended
-	if v := getEnvFloat("DEFAULT_TRUST_SCORE", 0); v > 0 {
-		c.Escrow.DefaultTrustScore = v
-	}
 	if v := getEnvFloat("FAILURE_TAX_RATE", 0); v > 0 {
 		c.Escrow.FailureTaxRate = v
 	}
@@ -321,6 +332,33 @@ func (c *Config) applyEnvOverrides() {
 	c.Federation.TrustDomain = getEnv("OCX_TRUST_DOMAIN", c.Federation.TrustDomain)
 	c.Federation.Region = getEnv("OCX_REGION", c.Federation.Region)
 	c.Federation.Organization = getEnv("OCX_ORG", c.Federation.Organization)
+
+	// Tri-Factor Gate
+	if v := getEnvFloat("TRI_FACTOR_IDENTITY_THRESHOLD", 0); v > 0 {
+		c.TriFactor.IdentityThreshold = v
+	}
+	if v := getEnvFloat("TRI_FACTOR_ENTROPY_THRESHOLD", 0); v > 0 {
+		c.TriFactor.EntropyThreshold = v
+	}
+	if v := getEnvFloat("TRI_FACTOR_JITTER_THRESHOLD", 0); v > 0 {
+		c.TriFactor.JitterThreshold = v
+	}
+	if v := getEnvFloat("TRI_FACTOR_COGNITIVE_THRESHOLD", 0); v > 0 {
+		c.TriFactor.CognitiveThreshold = v
+	}
+
+	// Handshake
+	if v := getEnvFloat("HANDSHAKE_MIN_TRUST_LEVEL", 0); v > 0 {
+		c.Handshake.MinTrustLevel = v
+	}
+	if v := getEnvFloat("HANDSHAKE_BASE_TAX_RATE", 0); v > 0 {
+		c.Handshake.BaseTaxRate = v
+	}
+
+	// HITL
+	if v := getEnvFloat("HITL_DEFAULT_COST_MULTIPLIER", 0); v > 0 {
+		c.HITL.DefaultCostMultiplier = v
+	}
 
 	// Webhooks
 	if v := getEnvInt("WEBHOOK_WORKERS", 0); v > 0 {
@@ -368,11 +406,11 @@ func (c *Config) applyEnvOverrides() {
 	c.Redis.Enabled = getEnvBool("OCX_REDIS_ENABLED", c.Redis.Enabled)
 
 	// Apply defaults for zero values
-	c.applyDefaults()
+	c.ApplyDefaults()
 }
 
 // applyDefaults sets sensible defaults for zero-valued config fields
-func (c *Config) applyDefaults() {
+func (c *Config) ApplyDefaults() {
 	if c.Server.Port == "" {
 		c.Server.Port = "8080"
 	}
@@ -394,9 +432,6 @@ func (c *Config) applyDefaults() {
 	if c.Escrow.EntropyThreshold == 0 {
 		c.Escrow.EntropyThreshold = 1.2
 	}
-	if c.Escrow.DefaultTrustScore == 0 {
-		c.Escrow.DefaultTrustScore = 0.5
-	}
 	if c.Escrow.FailureTaxRate == 0 {
 		c.Escrow.FailureTaxRate = 1.5
 	}
@@ -408,6 +443,33 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Federation.TrustDomain == "" {
 		c.Federation.TrustDomain = "spiffe://ocx-local"
+	}
+
+	// Tri-Factor Gate defaults
+	if c.TriFactor.IdentityThreshold == 0 {
+		c.TriFactor.IdentityThreshold = 0.65
+	}
+	if c.TriFactor.EntropyThreshold == 0 {
+		c.TriFactor.EntropyThreshold = 7.5
+	}
+	if c.TriFactor.JitterThreshold == 0 {
+		c.TriFactor.JitterThreshold = 0.01
+	}
+	if c.TriFactor.CognitiveThreshold == 0 {
+		c.TriFactor.CognitiveThreshold = 0.65
+	}
+
+	// Handshake defaults
+	if c.Handshake.MinTrustLevel == 0 {
+		c.Handshake.MinTrustLevel = 0.5
+	}
+	if c.Handshake.BaseTaxRate == 0 {
+		c.Handshake.BaseTaxRate = 0.10
+	}
+
+	// HITL defaults
+	if c.HITL.DefaultCostMultiplier == 0 {
+		c.HITL.DefaultCostMultiplier = 10.0
 	}
 	if c.Webhook.WorkerCount == 0 {
 		c.Webhook.WorkerCount = 4

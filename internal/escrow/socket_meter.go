@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/ocx/backend/internal/governance"
 )
 
 // SocketMeter provides real-time per-packet governance cost metering.
@@ -35,6 +37,9 @@ type SocketMeter struct {
 
 	// L4 FIX: Stop channel for graceful shutdown of background goroutine
 	stopEvict chan struct{}
+
+	// Governance config cache — tenant-specific cost parameters
+	govConfig *governance.GovernanceConfigCache
 }
 
 // TenantMeter tracks per-tenant metering state.
@@ -112,6 +117,12 @@ func NewSocketMeter() *SocketMeter {
 	return sm
 }
 
+// SetGovernanceConfig attaches a governance config cache to the socket meter.
+// When set, risk multipliers and trust discount tiers are read from tenant config.
+func (sm *SocketMeter) SetGovernanceConfig(cache *governance.GovernanceConfigCache) {
+	sm.govConfig = cache
+}
+
 // MeterFrame applies real-time governance metering to a single frame.
 // This is the hot path — called for every packet in the socket pipeline.
 func (sm *SocketMeter) MeterFrame(ctx *FrameContext) *MeterBillingEvent {
@@ -120,13 +131,30 @@ func (sm *SocketMeter) MeterFrame(ctx *FrameContext) *MeterBillingEvent {
 
 	// 2. Apply trust-score discount (higher trust → lower cost)
 	// §4.1: "Dynamic cost multiplier based on tool risk"
+	var (
+		highTrustThreshold = 0.8
+		highTrustDiscount  = 0.7
+		medTrustThreshold  = 0.6
+		medTrustDiscount   = 0.85
+		lowTrustThreshold  = 0.3
+		lowTrustSurcharge  = 1.5
+	)
+	if sm.govConfig != nil {
+		cfg := sm.govConfig.GetConfig(ctx.TenantID)
+		highTrustThreshold = cfg.MeterHighTrustThreshold
+		highTrustDiscount = cfg.MeterHighTrustDiscount
+		medTrustThreshold = cfg.MeterMedTrustThreshold
+		medTrustDiscount = cfg.MeterMedTrustDiscount
+		lowTrustThreshold = cfg.MeterLowTrustThreshold
+		lowTrustSurcharge = cfg.MeterLowTrustSurcharge
+	}
 	trustDiscount := 1.0
-	if ctx.TrustScore > 0.8 {
-		trustDiscount = 0.7 // 30% discount for highly trusted agents
-	} else if ctx.TrustScore > 0.6 {
-		trustDiscount = 0.85 // 15% discount for trusted
-	} else if ctx.TrustScore < 0.3 {
-		trustDiscount = 1.5 // 50% surcharge for untrusted
+	if ctx.TrustScore > highTrustThreshold {
+		trustDiscount = highTrustDiscount
+	} else if ctx.TrustScore > medTrustThreshold {
+		trustDiscount = medTrustDiscount
+	} else if ctx.TrustScore < lowTrustThreshold {
+		trustDiscount = lowTrustSurcharge
 	}
 
 	// 3. Compute costs
