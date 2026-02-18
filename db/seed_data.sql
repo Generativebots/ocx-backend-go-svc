@@ -532,9 +532,124 @@ INSERT INTO trust_attestations (attestation_id,tenant_id,ocx_instance_id,agent_i
 -- Startup tenant attestation
 ('dddddddd-dddd-dddd-dddd-dddddddddd08','00000000-0000-0000-0000-000000000002','ocx-us-east1-001','55555555-5555-5555-5555-555555555555','sha256:attest008_delta_0.55',0.55,'spiffe://ocx/us-east1/sig008',NOW()+INTERVAL '12 hours','{"verdict":"ALLOW","trust_score":0.55,"source":"tri-factor-gate","note":"new_agent_calibrating"}'::jsonb);
 
--- =============================================================================
--- VERIFICATION: Row counts per table
--- =============================================================================
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §19 TENANT GOVERNANCE CONFIGURATION
+-- ─────────────────────────────────────────────────────────────────────────────
+INSERT INTO tenant_governance_config (
+    tenant_id,
+    jury_trust_threshold, jury_audit_weight, jury_reputation_weight, jury_attestation_weight, jury_history_weight,
+    new_agent_default_score, min_balance_threshold, quarantine_score, point_to_score_factor,
+    kill_switch_threshold, quorum_threshold,
+    trust_tax_base_rate, federation_tax_base_rate, per_event_tax_rate, marketplace_commission, hitl_cost_multiplier,
+    risk_multipliers,
+    meter_high_trust_threshold, meter_high_trust_discount,
+    meter_med_trust_threshold, meter_med_trust_discount,
+    meter_low_trust_threshold, meter_low_trust_surcharge,
+    meter_base_cost_per_frame, unknown_tool_min_reputation, unknown_tool_tax_coefficient,
+    identity_threshold, entropy_threshold, jitter_threshold, cognitive_threshold,
+    entropy_high_cap, entropy_encrypted_threshold, entropy_suspicious_threshold,
+    drift_threshold, anomaly_threshold,
+    decay_half_life_hours, trust_ema_alpha, failure_penalty_factor, supermajority_threshold, handshake_min_trust,
+    updated_by
+) VALUES
+-- ACME Corp (ENTERPRISE) — production-tuned: higher thresholds, strict metering
+('00000000-0000-0000-0000-000000000001',
+ 0.70, 0.40, 0.30, 0.20, 0.10,
+ 0.25, 0.25, 0.00, 0.01,
+ 0.35, 0.66,
+ 0.12, 0.10, 0.015, 0.30, 10.0,
+ '{"data_query":1.0,"read_only":0.5,"file_read":1.0,"file_write":3.0,"network_call":2.0,"api_call":2.5,"data_mutation":4.0,"admin_action":5.0,"exec_command":5.0,"payment":4.0,"pii_access":3.5,"unknown":2.0}'::jsonb,
+ 0.80, 0.70, 0.60, 0.85, 0.30, 1.50, 0.001, 0.95, 5.0,
+ 0.70, 7.5, 0.01, 0.70,
+ 4.8, 7.5, 6.0,
+ 0.15, 5,
+ 168, 0.3, 0.8, 0.75, 0.55,
+ 'admin@acme.com'),
+-- Demo Tenant (FREE) — relaxed defaults for onboarding
+('00000000-0000-0000-0000-000000000002',
+ 0.50, 0.40, 0.30, 0.20, 0.10,
+ 0.40, 0.15, 0.00, 0.01,
+ 0.25, 0.60,
+ 0.08, 0.08, 0.005, 0.30, 5.0,
+ '{"data_query":1.0,"read_only":0.5,"file_read":1.0,"file_write":3.0,"network_call":2.0,"api_call":2.5,"data_mutation":4.0,"admin_action":5.0,"exec_command":5.0,"payment":4.0,"pii_access":3.5,"unknown":2.0}'::jsonb,
+ 0.80, 0.70, 0.60, 0.85, 0.30, 1.50, 0.001, 0.95, 5.0,
+ 0.65, 7.5, 0.01, 0.65,
+ 4.8, 7.5, 6.0,
+ 0.25, 8,
+ 168, 0.3, 0.8, 0.75, 0.50,
+ NULL),
+-- BigBank (PROFESSIONAL) — compliance-tight: low drift, high anomaly sensitivity
+('00000000-0000-0000-0000-000000000003',
+ 0.75, 0.35, 0.30, 0.25, 0.10,
+ 0.20, 0.30, 0.00, 0.01,
+ 0.40, 0.70,
+ 0.15, 0.12, 0.02, 0.25, 15.0,
+ '{"data_query":1.0,"read_only":0.5,"file_read":1.0,"file_write":3.5,"network_call":2.5,"api_call":3.0,"data_mutation":5.0,"admin_action":6.0,"exec_command":6.0,"payment":5.0,"pii_access":4.5,"unknown":3.0}'::jsonb,
+ 0.85, 0.65, 0.65, 0.80, 0.35, 1.80, 0.002, 0.97, 6.0,
+ 0.75, 7.0, 0.008, 0.75,
+ 4.5, 7.0, 5.5,
+ 0.10, 3,
+ 120, 0.25, 0.85, 0.80, 0.60,
+ 'sec@bigbank.com'),
+-- Startup IO (STARTER) — defaults (auto-created row)
+('00000000-0000-0000-0000-000000000004',
+ 0.65, 0.40, 0.30, 0.20, 0.10,
+ 0.30, 0.20, 0.00, 0.01,
+ 0.30, 0.66,
+ 0.10, 0.10, 0.01, 0.30, 10.0,
+ '{"data_query":1.0,"read_only":0.5,"file_read":1.0,"file_write":3.0,"network_call":2.0,"api_call":2.5,"data_mutation":4.0,"admin_action":5.0,"exec_command":5.0,"payment":4.0,"pii_access":3.5,"unknown":2.0}'::jsonb,
+ 0.80, 0.70, 0.60, 0.85, 0.30, 1.50, 0.001, 0.95, 5.0,
+ 0.65, 7.5, 0.01, 0.65,
+ 4.8, 7.5, 6.0,
+ 0.20, 5,
+ 168, 0.3, 0.8, 0.75, 0.50,
+ 'cto@startup.io')
+ON CONFLICT (tenant_id) DO NOTHING;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- §20 GOVERNANCE AUDIT LOG
+-- ─────────────────────────────────────────────────────────────────────────────
+INSERT INTO governance_audit_log (tenant_id,event_type,actor_id,target_id,action,old_value,new_value,metadata) VALUES
+-- ACME Corp: config tuning history
+('00000000-0000-0000-0000-000000000001','CONFIG_CHANGE','admin@acme.com',NULL,'UPDATE_GOVERNANCE_CONFIG',
+ '{"jury_trust_threshold":0.65}'::jsonb, '{"jury_trust_threshold":0.70}'::jsonb,
+ '{"reason":"Raising trust bar after Q3 security audit"}'::jsonb),
+('00000000-0000-0000-0000-000000000001','CONFIG_CHANGE','admin@acme.com',NULL,'UPDATE_GOVERNANCE_CONFIG',
+ '{"drift_threshold":0.20}'::jsonb, '{"drift_threshold":0.15}'::jsonb,
+ '{"reason":"Tightening drift after beta-3 incident"}'::jsonb),
+-- BigBank: config reset then re-tune
+('00000000-0000-0000-0000-000000000003','CONFIG_CHANGE','sec@bigbank.com',NULL,'RESET_TO_DEFAULTS',
+ NULL, '{"note":"Full config reset to recommended defaults"}'::jsonb,
+ '{"reason":"Compliance team requested baseline reset"}'::jsonb),
+('00000000-0000-0000-0000-000000000003','CONFIG_CHANGE','sec@bigbank.com',NULL,'UPDATE_GOVERNANCE_CONFIG',
+ '{"anomaly_threshold":5}'::jsonb, '{"anomaly_threshold":3}'::jsonb,
+ '{"reason":"MiFID-II compliance requires stricter anomaly detection"}'::jsonb),
+-- Trust mutation events
+('00000000-0000-0000-0000-000000000001','TRUST_MUTATION','cae-engine','22222222-2222-2222-2222-222222222222','trust_score_decrease',
+ '{"trust_score":0.55}'::jsonb, '{"trust_score":0.42}'::jsonb,
+ '{"reason":"Behavioral drift exceeded threshold","drift":0.18}'::jsonb),
+('00000000-0000-0000-0000-000000000001','TRUST_MUTATION','trust-engine','11111111-1111-1111-1111-111111111111','trust_score_increase',
+ '{"trust_score":0.85}'::jsonb, '{"trust_score":0.87}'::jsonb,
+ '{"reason":"Successful GPU purchase completed"}'::jsonb),
+-- Token events
+('00000000-0000-0000-0000-000000000001','TOKEN_REVOKED','cae-engine','66666666-6666-6666-6666-666666666666','revoke_all_tokens',
+ NULL, NULL,
+ '{"reason":"Data exfiltration attempt detected","tokens_revoked":3}'::jsonb),
+-- HITL decision
+('00000000-0000-0000-0000-000000000001','HITL_DECISION','operator-sarah','11111111-1111-1111-1111-111111111111','ALLOW_OVERRIDE',
+ '{"original_verdict":"ESCROW"}'::jsonb, '{"modified_verdict":"ALLOW","amount":25000}'::jsonb,
+ '{"escrow_id":"esc-001","cost_multiplier":10.0}'::jsonb),
+-- Metering event
+('00000000-0000-0000-0000-000000000001','METER_BILLING','socket-meter','11111111-1111-1111-1111-111111111111','levy_tax',
+ NULL, '{"tax_amount":150,"tool_class":"api_call","risk_multiplier":2.5}'::jsonb,
+ '{"session_id":"sess-001","trust_score":0.87}'::jsonb),
+-- Verdict audit
+('00000000-0000-0000-0000-000000000001','VERDICT','jury-engine','22222222-2222-2222-2222-222222222222','BLOCK',
+ NULL, '{"trust_level":0.42,"trust_tax":0.210,"reasoning":"Critical action + low trust"}'::jsonb,
+ '{"request_id":"req-002","pid":12346}'::jsonb),
+('00000000-0000-0000-0000-000000000003','VERDICT','jury-engine','77777777-7777-7777-7777-777777777777','ALLOW',
+ NULL, '{"trust_level":0.82,"trust_tax":0.054,"reasoning":"Compliance scan approved"}'::jsonb,
+ '{"request_id":"req-008","pid":20001}'::jsonb);
 SELECT tbl, cnt FROM (
 SELECT 'tenants' AS tbl, COUNT(*) AS cnt FROM tenants
 UNION ALL SELECT 'tenant_features', COUNT(*) FROM tenant_features
@@ -587,5 +702,7 @@ UNION ALL SELECT 'compliance_reports', COUNT(*) FROM compliance_reports
 UNION ALL SELECT 'activity_approvals', COUNT(*) FROM activity_approvals
 UNION ALL SELECT 'activity_versions', COUNT(*) FROM activity_versions
 UNION ALL SELECT 'trust_attestations', COUNT(*) FROM trust_attestations
+UNION ALL SELECT 'tenant_governance_config', COUNT(*) FROM tenant_governance_config
+UNION ALL SELECT 'governance_audit_log', COUNT(*) FROM governance_audit_log
 ) AS counts
 ORDER BY tbl;
